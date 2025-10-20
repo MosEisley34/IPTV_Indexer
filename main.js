@@ -477,14 +477,11 @@ async function extractAndExport(options) {
                         console.error(
                                 "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
                         );
+                        process.exitCode = 1;
+                        return;
                 }
-                process.exitCode = 1;
-                return;
-        }
 
-        if (useNordVPN) {
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
-        }
 
                 let proxyAgent;
 
@@ -504,7 +501,7 @@ async function extractAndExport(options) {
         }
 
         try {
-                const response = await axiosInstance.get(url, baseRequestConfig);
+                const response = await axiosInstance.get(url, requestConfig);
 
                 if (response.status === 200) {
                         console.log("Página cargada correctamente.");
