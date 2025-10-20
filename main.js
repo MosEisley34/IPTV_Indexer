@@ -3,6 +3,7 @@ const { wrapper } = require("axios-cookiejar-support");
 const cheerio = require("cheerio");
 const fs = require("fs");
 const vm = require("vm");
+const { execFile } = require("child_process");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 const { CookieJar } = require("tough-cookie");
 
@@ -65,6 +66,119 @@ function seedCookies(jar, cookieString, targets) {
         }
 }
 
+function safeDecodeURIComponent(value) {
+        if (typeof value !== "string" || value.length === 0) {
+                return "";
+        }
+
+        try {
+                return decodeURIComponent(value);
+        } catch (error) {
+                return value;
+        }
+}
+
+function buildProxyUrlFromParsed(parsedUrl) {
+        const hasUser = parsedUrl.username && parsedUrl.username.length > 0;
+        const hasPass = parsedUrl.password && parsedUrl.password.length > 0;
+        const decodedUser = hasUser ? safeDecodeURIComponent(parsedUrl.username) : "";
+        const decodedPass = hasPass ? safeDecodeURIComponent(parsedUrl.password) : "";
+
+        let credentials = "";
+
+        if (hasUser) {
+                credentials += encodeURIComponent(decodedUser);
+        }
+
+        if (hasPass) {
+                credentials += `:${encodeURIComponent(decodedPass)}`;
+        }
+
+        if (hasUser || hasPass) {
+                credentials += "@";
+        }
+
+        const pathname = parsedUrl.pathname === "/" ? "" : parsedUrl.pathname;
+
+        return `${parsedUrl.protocol}//${credentials}${parsedUrl.host}${pathname}${parsedUrl.search}${parsedUrl.hash}`;
+}
+
+function tryEncodeCredentials(rawUrl) {
+        const schemeSeparator = rawUrl.indexOf("://");
+
+        if (schemeSeparator === -1) {
+                return null;
+        }
+
+        const scheme = rawUrl.slice(0, schemeSeparator + 3);
+        const remainder = rawUrl.slice(schemeSeparator + 3);
+        const atIndex = remainder.lastIndexOf("@");
+
+        if (atIndex === -1) {
+                return null;
+        }
+
+        const authPart = remainder.slice(0, atIndex);
+        const hostPart = remainder.slice(atIndex + 1);
+
+        if (!hostPart) {
+                return null;
+        }
+
+        const colonIndex = authPart.indexOf(":");
+        const rawUsername = colonIndex === -1 ? authPart : authPart.slice(0, colonIndex);
+        const rawPassword = colonIndex === -1 ? "" : authPart.slice(colonIndex + 1);
+
+        const decodedUser = rawUsername ? safeDecodeURIComponent(rawUsername) : "";
+        const decodedPass = rawPassword ? safeDecodeURIComponent(rawPassword) : "";
+
+        let credentials = "";
+
+        if (decodedUser) {
+                credentials += encodeURIComponent(decodedUser);
+        }
+
+        if (rawPassword !== "") {
+                credentials += `:${encodeURIComponent(decodedPass)}`;
+        }
+
+        if (credentials.length === 0) {
+                return null;
+        }
+
+        return `${scheme}${credentials}@${hostPart}`;
+}
+
+function normalizeProxyUrl(rawUrl) {
+        if (!rawUrl) {
+                return { url: "" };
+        }
+
+        const tryParse = (value) => {
+                try {
+                        return { parsed: new URL(value) };
+                } catch (error) {
+                        return { error };
+                }
+        };
+
+        let { parsed, error } = tryParse(rawUrl);
+
+        if (error) {
+                const encodedAttempt = tryEncodeCredentials(rawUrl);
+
+                if (encodedAttempt) {
+                        ({ parsed, error } = tryParse(encodedAttempt));
+                }
+
+                if (error) {
+                        return { error: `Proxy URL inválida: ${error.message}` };
+                }
+        }
+
+        return { url: buildProxyUrlFromParsed(parsed) };
+}
+
 function parseCliArgs() {
         const args = process.argv.slice(2);
         const config = {
@@ -72,14 +186,20 @@ function parseCliArgs() {
                 useNordVPN:
                         process.env.USE_NORDVPN === "true" ||
                         process.env.USE_NORDVPN === "1",
+                useNordVpnCli:
+                        process.env.USE_NORDVPN_CLI === "true" ||
+                        process.env.USE_NORDVPN_CLI === "1",
                 nordVpnProxyUrl: process.env.NORDVPN_PROXY_URL || "",
-                loginUrl: process.env.LOGIN_URL || "",
-                loginUsername: process.env.LOGIN_USERNAME || "",
-                loginPassword: process.env.LOGIN_PASSWORD || "",
-                loginPayload: process.env.LOGIN_PAYLOAD || "",
-                rawCookies: process.env.SCRAPER_COOKIES || "",
-                rawHeaders: process.env.SCRAPER_HEADERS || "",
+                nordVpnCliServer: process.env.NORDVPN_CLI_SERVER || "",
+                nordVpnCliTimeoutMs:
+                        process.env.NORDVPN_CLI_TIMEOUT_MS
+                                ? Number(process.env.NORDVPN_CLI_TIMEOUT_MS)
+                                : undefined,
         };
+
+        if (Number.isNaN(config.nordVpnCliTimeoutMs)) {
+                config.nordVpnCliTimeoutMs = undefined;
+        }
 
         const nordVpnHost = process.env.NORDVPN_PROXY_HOST;
         const nordVpnPort = process.env.NORDVPN_PROXY_PORT;
@@ -116,34 +236,35 @@ function parseCliArgs() {
                         continue;
                 }
 
-                if (arg.startsWith("--login-url=")) {
-                        config.loginUrl = arg.slice("--login-url=".length);
+                if (arg === "--use-nordvpn-cli") {
+                        config.useNordVpnCli = true;
                         continue;
                 }
 
-                if (arg.startsWith("--login-username=")) {
-                        config.loginUsername = arg.slice("--login-username=".length);
+                if (arg.startsWith("--nordvpn-cli=")) {
+                        config.useNordVpnCli = true;
+                        config.nordVpnCliServer = arg.slice("--nordvpn-cli=".length);
                         continue;
                 }
 
-                if (arg.startsWith("--login-password=")) {
-                        config.loginPassword = arg.slice("--login-password=".length);
+                if (arg.startsWith("--nordvpn-cli-timeout=")) {
+                        const timeoutMs = Number(
+                                arg.slice("--nordvpn-cli-timeout=".length)
+                        );
+                        if (!Number.isNaN(timeoutMs)) {
+                                config.nordVpnCliTimeoutMs = timeoutMs;
+                        }
                         continue;
                 }
+        }
 
-                if (arg.startsWith("--login-payload=")) {
-                        config.loginPayload = arg.slice("--login-payload=".length);
-                        continue;
-                }
+        if (config.nordVpnProxyUrl) {
+                const normalized = normalizeProxyUrl(config.nordVpnProxyUrl);
 
-                if (arg.startsWith("--cookies=")) {
-                        config.rawCookies = arg.slice("--cookies=".length);
-                        continue;
-                }
-
-                if (arg.startsWith("--headers=")) {
-                        config.rawHeaders = arg.slice("--headers=".length);
-                        continue;
+                if (normalized.error) {
+                        config.proxyValidationError = normalized.error;
+                } else {
+                        config.nordVpnProxyUrl = normalized.url;
                 }
         }
 
@@ -156,12 +277,9 @@ function logHelp() {
                 `  --url=<URL>             URL que se desea analizar (también SCRAPER_URL).\n` +
                 `  --use-nordvpn           Fuerza el uso del proxy de NordVPN.\n` +
                 `  --nordvpn-proxy=<URL>   URL completa del proxy (p. ej. http://usuario:pass@host:puerto).\n` +
-                `  --login-url=<URL>       URL del endpoint de autenticación.\n` +
-                `  --login-username=<USR>  Usuario para autenticarse.\n` +
-                `  --login-password=<PWD>  Contraseña para autenticarse.\n` +
-                `  --login-payload=<JSON>  Carga JSON completa a enviar durante el login.\n` +
-                `  --cookies="..."         Cadena cruda de cookies a enviar.\n` +
-                `  --headers="..."         Cabeceras adicionales (formato Clave: Valor;...).\n` +
+                `  --use-nordvpn-cli       Inicia y verifica la conexión usando el CLI oficial de NordVPN.\n` +
+                `  --nordvpn-cli=<server>  Conecta mediante CLI al servidor especificado.\n` +
+                `  --nordvpn-cli-timeout=<ms> Tiempo máximo para que el CLI conecte (por defecto 60000 ms).\n` +
                 `  --help                  Muestra esta ayuda.\n\n` +
                 `Variables de entorno:\n` +
                 `  USE_NORDVPN=true        Activa el uso de NordVPN.\n` +
@@ -170,12 +288,9 @@ function logHelp() {
                 `  NORDVPN_PROXY_PORT      Puerto del proxy de NordVPN.\n` +
                 `  NORDVPN_USERNAME        Usuario del proxy (si aplica).\n` +
                 `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).\n` +
-                `  LOGIN_URL               Endpoint para iniciar sesión.\n` +
-                `  LOGIN_USERNAME          Usuario para iniciar sesión.\n` +
-                `  LOGIN_PASSWORD          Contraseña para iniciar sesión.\n` +
-                `  LOGIN_PAYLOAD           Carga JSON completa para el login (prioritaria sobre usuario/contraseña).\n` +
-                `  SCRAPER_COOKIES         Cookies crudas a incluir en las peticiones.\n` +
-                `  SCRAPER_HEADERS         Cabeceras extra (formato Clave: Valor;...).`);
+                `  USE_NORDVPN_CLI=true    Ejecuta el CLI de NordVPN antes de iniciar el scraping.\n` +
+                `  NORDVPN_CLI_SERVER      Servidor al que se conectará el CLI (opcional).\n` +
+                `  NORDVPN_CLI_TIMEOUT_MS  Tiempo máximo de espera para la conexión del CLI.`);
 }
 
 function maskProxyUrl(proxyUrl) {
@@ -191,91 +306,118 @@ function maskProxyUrl(proxyUrl) {
         }
 }
 
-function buildBaseHeaders(rawHeaders, rawCookies) {
-        const headers = {
-                "User-Agent": DEFAULT_USER_AGENT,
-                ...parseHeaderString(rawHeaders),
-        };
+function execNordVpn(args, timeoutMs = 15000) {
+        return new Promise((resolve, reject) => {
+                execFile("nordvpn", args, { timeout: timeoutMs }, (error, stdout, stderr) => {
+                        if (error) {
+                                const enrichedError = new Error(
+                                        `Error ejecutando 'nordvpn ${args.join(" ")}'. ${error.message}`
+                                );
+                                enrichedError.stdout = stdout;
+                                enrichedError.stderr = stderr;
+                                enrichedError.code = error.code;
+                                enrichedError.killed = error.killed;
+                                return reject(enrichedError);
+                        }
 
-        if (rawCookies && !headers.Cookie) {
-                headers.Cookie = rawCookies;
-        }
-
-        return headers;
+                        resolve({ stdout, stderr });
+                });
+        });
 }
 
-function buildRequestConfig({ useNordVPN, nordVpnProxyUrl, headers }) {
-        const config = {
-                headers: { ...headers },
-        };
+function isNordVpnConnected(statusOutput, server) {
+        const normalizedOutput = statusOutput.toLowerCase();
+        if (!normalizedOutput.includes("status")) {
+                return false;
+        }
 
-        if (useNordVPN) {
-                if (!nordVpnProxyUrl) {
+        if (!normalizedOutput.includes("connected")) {
+                return false;
+        }
+
+        if (server) {
+                const normalizedServer = server.toLowerCase();
+                return (
+                        normalizedOutput.includes(normalizedServer) ||
+                        normalizedOutput.includes(`country: ${normalizedServer}`)
+                );
+        }
+
+        return true;
+}
+
+async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
+        console.log("[NordVPN CLI] Verificando estado actual...");
+
+        try {
+                const { stdout } = await execNordVpn(["status"], timeoutMs);
+                if (isNordVpnConnected(stdout, server)) {
+                        console.log("[NordVPN CLI] Ya existe una conexión activa.");
+                        return;
+                }
+        } catch (error) {
+                if (error.code === "ENOENT") {
                         throw new Error(
-                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
+                                "No se encontró el binario 'nordvpn'. Asegúrate de tener el CLI instalado y en el PATH."
+                        );
+                }
+                console.warn(
+                        `[NordVPN CLI] No se pudo obtener el estado inicial (${error.message}). Se intentará conectar...`
+                );
+        }
+
+        console.log(
+                `[NordVPN CLI] Conectando${server ? ` al servidor '${server}'` : ""}...`
+        );
+
+        const connectArgs = ["connect"];
+        if (server) {
+                connectArgs.push(server);
+        }
+
+        try {
+                const { stdout, stderr } = await execNordVpn(connectArgs, timeoutMs);
+                if (stdout.trim()) {
+                        console.log("[NordVPN CLI]", stdout.trim());
+                }
+                if (stderr.trim()) {
+                        console.warn("[NordVPN CLI]", stderr.trim());
+                }
+        } catch (error) {
+                if (error.stdout) {
+                        console.error("[NordVPN CLI] STDOUT:", error.stdout.trim());
+                }
+                if (error.stderr) {
+                        console.error("[NordVPN CLI] STDERR:", error.stderr.trim());
+                }
+                throw new Error(
+                        `[NordVPN CLI] Error al ejecutar el comando de conexión: ${error.message}`
+                );
+        }
+
+        const start = Date.now();
+        const pollInterval = 3000;
+
+        while (Date.now() - start < timeoutMs) {
+                try {
+                        const { stdout } = await execNordVpn(["status"], timeoutMs);
+                        if (isNordVpnConnected(stdout, server)) {
+                                console.log("[NordVPN CLI] Conexión establecida correctamente.");
+                                return;
+                        }
+                        console.log("[NordVPN CLI] Aún conectando...", stdout.trim());
+                } catch (error) {
+                        console.warn(
+                                `[NordVPN CLI] Error al verificar el estado (${error.message}). Se seguirá intentando...`
                         );
                 }
 
-                const proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
-                config.httpAgent = proxyAgent;
-                config.httpsAgent = proxyAgent;
-                config.proxy = false;
+                await new Promise((resolve) => setTimeout(resolve, pollInterval));
         }
 
-        return config;
-}
-
-function resolveLoginPayload({ loginUrl, loginPayload, loginUsername, loginPassword }) {
-        if (!loginUrl) {
-                return null;
-        }
-
-        if (loginPayload) {
-                        try {
-                                return JSON.parse(loginPayload);
-                        } catch (error) {
-                                throw new Error(
-                                        `El payload de login proporcionado no es un JSON válido: ${error.message}`
-                                );
-                        }
-        }
-
-        if (!loginUsername && !loginPassword) {
-                throw new Error(
-                        "Se indicó un endpoint de autenticación, pero faltan LOGIN_USERNAME y LOGIN_PASSWORD o LOGIN_PAYLOAD."
-                );
-        }
-
-        if (!loginUsername || !loginPassword) {
-                throw new Error(
-                        "Debes proporcionar tanto LOGIN_USERNAME como LOGIN_PASSWORD para autenticarse."
-                );
-        }
-
-        return {
-                username: loginUsername,
-                password: loginPassword,
-        };
-}
-
-async function performLogin(axiosInstance, loginUrl, payload, baseRequestConfig) {
-        if (!loginUrl || !payload) {
-                return;
-        }
-
-        const loginRequestConfig = {
-                ...baseRequestConfig,
-                headers: {
-                        ...baseRequestConfig.headers,
-                },
-        };
-
-        if (!loginRequestConfig.headers["Content-Type"]) {
-                loginRequestConfig.headers["Content-Type"] = "application/json";
-        }
-
-        const response = await axiosInstance.post(loginUrl, payload, loginRequestConfig);
-        console.log("Autenticación completada. Estado:", response.status);
+        throw new Error(
+                `[NordVPN CLI] Tiempo de espera agotado tras ${timeoutMs} ms esperando la conexión.`
+        );
 }
 
 async function extractAndExport(options) {
@@ -287,10 +429,10 @@ async function extractAndExport(options) {
         const {
                 url,
                 useNordVPN,
+                useNordVpnCli,
                 nordVpnProxyUrl,
-                loginUrl,
-                rawCookies,
-                rawHeaders,
+                nordVpnCliServer,
+                nordVpnCliTimeoutMs,
         } = options;
 
         if (!url) {
@@ -301,25 +443,37 @@ async function extractAndExport(options) {
                 return;
         }
 
-        const jar = new CookieJar();
-        const axiosInstance = wrapper(
-                axios.create({
-                        jar,
-                        withCredentials: true,
-                })
-        );
+        if (useNordVpnCli) {
+                try {
+                        await ensureNordVpnCliConnection({
+                                server: nordVpnCliServer,
+                                timeoutMs: nordVpnCliTimeoutMs || 60000,
+                        });
+                } catch (error) {
+                        console.error(error.message);
+                        process.exitCode = 1;
+                        return;
+                }
+        }
 
-        const baseHeaders = buildBaseHeaders(rawHeaders, rawCookies);
-        let baseRequestConfig;
-        try {
-                baseRequestConfig = buildRequestConfig({
-                        useNordVPN,
-                        nordVpnProxyUrl,
-                        headers: baseHeaders,
-                });
-        } catch (error) {
-                console.error(error.message);
-                if (useNordVPN) {
+        const requestConfig = {
+                headers: {
+                        "User-Agent":
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                },
+        };
+
+        if (useNordVPN) {
+                if (options.proxyValidationError) {
+                        console.error(options.proxyValidationError);
+                        process.exitCode = 1;
+                        return;
+                }
+
+                if (!nordVpnProxyUrl) {
+                        console.error(
+                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
+                        );
                         console.error(
                                 "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
                         );
@@ -332,32 +486,21 @@ async function extractAndExport(options) {
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
         }
 
-        seedCookies(jar, rawCookies, [loginUrl, url]);
+                let proxyAgent;
 
-        let loginPayload;
-        try {
-                loginPayload = resolveLoginPayload(options);
-        } catch (error) {
-                console.error(error.message);
-                process.exitCode = 1;
-                return;
-        }
-
-        if (loginPayload) {
                 try {
-                        await performLogin(axiosInstance, loginUrl, loginPayload, baseRequestConfig);
+                        proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
                 } catch (error) {
-                        console.error("Error durante la autenticación:", error.message);
-                        if (error.response) {
-                                console.error("Detalles de la respuesta de login:", {
-                                        status: error.response.status,
-                                        headers: error.response.headers,
-                                        data: error.response.data,
-                                });
-                        }
+                        console.error(
+                                `Proxy URL inválida: ${error.message}. Revisa tus credenciales o el formato del proxy.`
+                        );
                         process.exitCode = 1;
                         return;
                 }
+
+                requestConfig.httpAgent = proxyAgent;
+                requestConfig.httpsAgent = proxyAgent;
+                requestConfig.proxy = false;
         }
 
         try {
