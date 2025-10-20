@@ -1,0 +1,16 @@
+# Configuración de ejemplo para IPTV_Indexer
+scraper:
+  urls:
+    - https://example.com/iptv-list
+
+nordvpn:
+  useProxy: true
+  proxy:
+    protocol: http
+    host: us1234.nordvpn.com
+    port: 89
+    username: YOUR_NORDVPN_USERNAME
+    password: YOUR_NORDVPN_PASSWORD
+  useCli: true
+  preferredLocation: us
+  cliTimeoutMs: 60000
