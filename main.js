@@ -78,7 +78,7 @@ async function main() {
 }
 
 main().catch((error) => {
-        console.error("Unexpected error:", error);
+        console.error("Error inesperado:", error);
         process.exitCode = 1;
 });
 
