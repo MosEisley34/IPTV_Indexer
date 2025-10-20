@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 const http = require("http");
 const https = require("https");
@@ -8,6 +9,251 @@ const { execFile } = require("child_process");
 const DEFAULT_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+
+const DEFAULT_CONFIG_FILENAME = "config.yaml";
+
+function stripYamlComment(line) {
+        let result = "";
+        let inSingle = false;
+        let inDouble = false;
+        let escaping = false;
+
+        for (const char of line) {
+                if (escaping) {
+                        result += char;
+                        escaping = false;
+                        continue;
+                }
+
+                if (char === "'" && !inDouble) {
+                        inSingle = !inSingle;
+                        result += char;
+                        continue;
+                }
+
+                if (char === "\"" && !inSingle) {
+                        inDouble = !inDouble;
+                        result += char;
+                        continue;
+                }
+
+                if (char === "\\" && inDouble) {
+                        escaping = true;
+                        result += char;
+                        continue;
+                }
+
+                if (char === "#" && !inSingle && !inDouble) {
+                        break;
+                }
+
+                result += char;
+        }
+
+        return result;
+}
+
+function parseYamlScalar(rawValue) {
+        const trimmed = rawValue.trim();
+
+        if (trimmed.length === 0) {
+                return "";
+        }
+
+        if (trimmed === "~" || trimmed.toLowerCase() === "null") {
+                return null;
+        }
+
+        if (trimmed.toLowerCase() === "true") {
+                return true;
+        }
+
+        if (trimmed.toLowerCase() === "false") {
+                return false;
+        }
+
+        if (!Number.isNaN(Number(trimmed)) && trimmed.trim() !== "") {
+                return Number(trimmed);
+        }
+
+        if (
+                (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+                (trimmed.startsWith("'") && trimmed.endsWith("'"))
+        ) {
+                const isDouble = trimmed.startsWith('"');
+                let inner = trimmed.slice(1, -1);
+
+                if (isDouble) {
+                        inner = inner
+                                .replace(/\\n/g, "\n")
+                                .replace(/\\r/g, "\r")
+                                .replace(/\\t/g, "\t")
+                                .replace(/\\"/g, '"')
+                                .replace(/\\\\/g, "\\");
+                } else {
+                        inner = inner.replace(/''/g, "'");
+                }
+
+                return inner;
+        }
+
+        return trimmed;
+}
+
+function findNextRelevantLine(lines, startIndex) {
+        for (let i = startIndex; i < lines.length; i += 1) {
+                const withoutComment = stripYamlComment(lines[i]);
+                if (!withoutComment || withoutComment.trim().length === 0) {
+                        continue;
+                }
+                const indent = withoutComment.match(/^ */)?.[0].length || 0;
+                return {
+                        indent,
+                        trimmed: withoutComment.trim(),
+                };
+        }
+
+        return null;
+}
+
+function parseSimpleYaml(content) {
+        const lines = content.split(/\r?\n/);
+        const root = {};
+        const stack = [{ indent: -1, container: root }];
+
+        for (let i = 0; i < lines.length; i += 1) {
+                const withoutComment = stripYamlComment(lines[i]);
+
+                if (!withoutComment) {
+                        continue;
+                }
+
+                const indent = withoutComment.match(/^ */)?.[0].length || 0;
+                const trimmed = withoutComment.trim();
+
+                if (trimmed.length === 0) {
+                        continue;
+                }
+
+                while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+                        stack.pop();
+                }
+
+                const parent = stack[stack.length - 1].container;
+
+                if (trimmed.startsWith("- ")) {
+                        if (!Array.isArray(parent)) {
+                                throw new Error(
+                                        `Se encontró un elemento de lista inesperado en la línea ${i + 1}`
+                                );
+                        }
+
+                        const valuePart = trimmed.slice(2).trim();
+
+                        if (valuePart.length === 0) {
+                                const lookAhead = findNextRelevantLine(lines, i + 1);
+                                const container =
+                                        lookAhead && lookAhead.indent > indent && lookAhead.trimmed.startsWith("- ")
+                                                ? []
+                                                : {};
+                                parent.push(container);
+                                stack.push({ indent, container });
+                                continue;
+                        }
+
+                        if (!valuePart.includes(":") || valuePart.startsWith('"') || valuePart.startsWith("'")) {
+                                parent.push(parseYamlScalar(valuePart));
+                                continue;
+                        }
+
+                        const colonIndex = valuePart.indexOf(":");
+                        const key = valuePart.slice(0, colonIndex).trim();
+                        const remainder = valuePart.slice(colonIndex + 1).trim();
+                        const entry = {};
+                        parent.push(entry);
+                        stack.push({ indent, container: entry });
+
+                        if (remainder.length === 0) {
+                                const lookAhead = findNextRelevantLine(lines, i + 1);
+                                entry[key] =
+                                        lookAhead && lookAhead.indent > indent && lookAhead.trimmed.startsWith("- ")
+                                                ? []
+                                                : {};
+                                stack.push({ indent: indent + 2, container: entry[key] });
+                        } else {
+                                entry[key] = parseYamlScalar(remainder);
+                                stack.pop();
+                        }
+
+                        continue;
+                }
+
+                const colonIndex = trimmed.indexOf(":");
+
+                if (colonIndex === -1) {
+                        continue;
+                }
+
+                const key = trimmed.slice(0, colonIndex).trim();
+                const valuePart = trimmed.slice(colonIndex + 1).trim();
+
+                if (valuePart.length === 0) {
+                        const lookAhead = findNextRelevantLine(lines, i + 1);
+                        const container =
+                                lookAhead && lookAhead.indent > indent && lookAhead.trimmed.startsWith("- ")
+                                        ? []
+                                        : {};
+                        parent[key] = container;
+                        stack.push({ indent, container });
+                        continue;
+                }
+
+                parent[key] = parseYamlScalar(valuePart);
+        }
+
+        return root;
+}
+
+function resolveConfigPath(configPath) {
+        if (!configPath) {
+                return path.join(__dirname, DEFAULT_CONFIG_FILENAME);
+        }
+
+        if (path.isAbsolute(configPath)) {
+                return configPath;
+        }
+
+        return path.resolve(process.cwd(), configPath);
+}
+
+function loadConfigFile(configPath) {
+        const resolvedPath = resolveConfigPath(configPath);
+
+        try {
+                if (!fs.existsSync(resolvedPath)) {
+                        return { data: {}, path: resolvedPath, exists: false };
+                }
+
+                const raw = fs.readFileSync(resolvedPath, "utf8");
+
+                if (!raw.trim()) {
+                        return { data: {}, path: resolvedPath, exists: true };
+                }
+
+                const parsed = parseSimpleYaml(raw);
+
+                if (typeof parsed !== "object" || parsed === null) {
+                        return { data: {}, path: resolvedPath, exists: true };
+                }
+
+                return { data: parsed, path: resolvedPath, exists: true };
+        } catch (error) {
+                console.warn(
+                        `No se pudo cargar el archivo de configuración (${resolvedPath}): ${error.message}`
+                );
+                return { data: {}, path: resolvedPath, exists: false };
+        }
+}
 
 function safeDecodeURIComponent(value) {
         if (typeof value !== "string" || value.length === 0) {
@@ -128,8 +374,20 @@ function normalizeProxyUrl(rawUrl) {
 
 function parseCliArgs() {
         const args = process.argv.slice(2);
+        let configPathArg;
+
+        for (const arg of args) {
+                if (arg.startsWith("--config=")) {
+                        configPathArg = arg.slice("--config=".length);
+                }
+        }
+
+        const envConfigPath = process.env.CONFIG_FILE || process.env.SCRAPER_CONFIG;
+        const loadedConfig = loadConfigFile(configPathArg || envConfigPath);
+        const fileConfig = loadedConfig.data || {};
         const config = {
                 url: process.env.SCRAPER_URL || "",
+                urls: [],
                 useNordVPN:
                         process.env.USE_NORDVPN === "true" ||
                         process.env.USE_NORDVPN === "1",
@@ -144,8 +402,107 @@ function parseCliArgs() {
                                 : undefined,
         };
 
+        if (loadedConfig.exists) {
+                config.loadedConfigPath = loadedConfig.path;
+        }
+
         if (Number.isNaN(config.nordVpnCliTimeoutMs)) {
                 config.nordVpnCliTimeoutMs = undefined;
+        }
+
+        if (fileConfig && typeof fileConfig === "object") {
+                const scraperConfig = fileConfig.scraper;
+
+                if (scraperConfig && typeof scraperConfig === "object") {
+                        if (!config.url && typeof scraperConfig.url === "string") {
+                                config.url = scraperConfig.url;
+                        }
+
+                        if (Array.isArray(scraperConfig.urls)) {
+                                config.urls = scraperConfig.urls
+                                        .map((item) => (typeof item === "string" ? item.trim() : ""))
+                                        .filter((item) => item.length > 0);
+                        }
+                }
+
+                const nordConfig = fileConfig.nordvpn;
+
+                if (nordConfig && typeof nordConfig === "object") {
+                        if (typeof nordConfig.useProxy === "boolean") {
+                                config.useNordVPN = nordConfig.useProxy;
+                        }
+
+                        if (typeof nordConfig.useCli === "boolean") {
+                                config.useNordVpnCli = nordConfig.useCli;
+                        }
+
+                        if (nordConfig.cliTimeoutMs !== undefined) {
+                                const parsedTimeout = Number(nordConfig.cliTimeoutMs);
+                                if (!Number.isNaN(parsedTimeout)) {
+                                        config.nordVpnCliTimeoutMs = parsedTimeout;
+                                }
+                        }
+
+                        if (!config.nordVpnCliServer) {
+                                if (typeof nordConfig.cliServer === "string" && nordConfig.cliServer.trim()) {
+                                        config.nordVpnCliServer = nordConfig.cliServer.trim();
+                                } else if (
+                                        typeof nordConfig.preferredLocation === "string" &&
+                                        nordConfig.preferredLocation.trim()
+                                ) {
+                                        config.nordVpnCliServer = nordConfig.preferredLocation.trim();
+                                }
+                        }
+
+                        if (!config.nordVpnProxyUrl) {
+                                if (typeof nordConfig.proxyUrl === "string" && nordConfig.proxyUrl.trim()) {
+                                        config.nordVpnProxyUrl = nordConfig.proxyUrl.trim();
+                                } else if (nordConfig.proxy && typeof nordConfig.proxy === "object") {
+                                        const proxy = nordConfig.proxy;
+                                        const host = proxy.host || proxy.hostname;
+                                        const port = proxy.port;
+
+                                        if (host && port) {
+                                                const protocol = proxy.protocol ? String(proxy.protocol) : "http";
+                                                let credentials = "";
+
+                                                if (proxy.username) {
+                                                        credentials += encodeURIComponent(String(proxy.username));
+
+                                                        if (proxy.password !== undefined) {
+                                                                credentials += `:${encodeURIComponent(
+                                                                        String(proxy.password)
+                                                                )}`;
+                                                        }
+
+                                                        credentials += "@";
+                                                }
+
+                                                config.nordVpnProxyUrl = `${protocol}://${credentials}${host}:${port}`;
+                                        }
+                                }
+
+                                if (!config.nordVpnProxyUrl && nordConfig.host && nordConfig.port) {
+                                        const host = nordConfig.host;
+                                        const port = nordConfig.port;
+                                        let credentials = "";
+
+                                        if (nordConfig.username) {
+                                                credentials += encodeURIComponent(String(nordConfig.username));
+
+                                                if (nordConfig.password !== undefined) {
+                                                        credentials += `:${encodeURIComponent(
+                                                                String(nordConfig.password)
+                                                        )}`;
+                                                }
+
+                                                credentials += "@";
+                                        }
+
+                                        config.nordVpnProxyUrl = `http://${credentials}${host}:${port}`;
+                                }
+                        }
+                }
         }
 
         const nordVpnHost = process.env.NORDVPN_PROXY_HOST;
@@ -154,18 +511,20 @@ function parseCliArgs() {
         const nordVpnPass = process.env.NORDVPN_PASSWORD;
 
         if (!config.nordVpnProxyUrl && nordVpnHost && nordVpnPort) {
-                const credentials =
-                        nordVpnUser && nordVpnPass
-                                ? `${encodeURIComponent(nordVpnUser)}:${encodeURIComponent(
-                                          nordVpnPass
-                                  )}@`
-                                : "";
-                config.nordVpnProxyUrl = `http://${credentials}${nordVpnHost}:${nordVpnPort}`;
+                        const credentials =
+                                nordVpnUser && nordVpnPass
+                                        ? `${encodeURIComponent(nordVpnUser)}:${encodeURIComponent(nordVpnPass)}@`
+                                        : "";
+                        config.nordVpnProxyUrl = `http://${credentials}${nordVpnHost}:${nordVpnPort}`;
         }
 
         for (const arg of args) {
                 if (arg === "--help") {
                         return { help: true };
+                }
+
+                if (arg.startsWith("--config=")) {
+                        continue;
                 }
 
                 if (arg.startsWith("--url=")) {
@@ -205,6 +564,18 @@ function parseCliArgs() {
                 }
         }
 
+        if (typeof config.url === "string") {
+                config.url = config.url.trim();
+        }
+
+        if (!Array.isArray(config.urls)) {
+                config.urls = [];
+        } else {
+                config.urls = config.urls
+                        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+                        .filter((entry) => entry.length > 0);
+        }
+
         if (config.nordVpnProxyUrl) {
                 const normalized = normalizeProxyUrl(config.nordVpnProxyUrl);
 
@@ -222,6 +593,7 @@ function logHelp() {
         console.log(`Uso: node main.js --url=<URL> [opciones]\n\n` +
                 `Opciones:\n` +
                 `  --url=<URL>             URL que se desea analizar (también SCRAPER_URL).\n` +
+                `  --config=<ruta>         Ruta al archivo YAML de configuración (por defecto ./config.yaml).\n` +
                 `  --use-nordvpn           Fuerza el uso del proxy de NordVPN.\n` +
                 `  --nordvpn-proxy=<URL>   URL completa del proxy (p. ej. http://usuario:pass@host:puerto).\n` +
                 `  --use-nordvpn-cli       Inicia y verifica la conexión usando el CLI oficial de NordVPN.\n` +
@@ -229,6 +601,8 @@ function logHelp() {
                 `  --nordvpn-cli-timeout=<ms> Tiempo máximo para que el CLI conecte (por defecto 60000 ms).\n` +
                 `  --help                  Muestra esta ayuda.\n\n` +
                 `Variables de entorno:\n` +
+                `  CONFIG_FILE             Ruta al archivo YAML de configuración.\n` +
+                `  SCRAPER_CONFIG          Alias de CONFIG_FILE.\n` +
                 `  USE_NORDVPN=true        Activa el uso de NordVPN.\n` +
                 `  NORDVPN_PROXY_URL       Proxy HTTP(S) proporcionado por NordVPN.\n` +
                 `  NORDVPN_PROXY_HOST      Host del proxy de NordVPN.\n` +
@@ -237,7 +611,9 @@ function logHelp() {
                 `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).\n` +
                 `  USE_NORDVPN_CLI=true    Ejecuta el CLI de NordVPN antes de iniciar el scraping.\n` +
                 `  NORDVPN_CLI_SERVER      Servidor al que se conectará el CLI (opcional).\n` +
-                `  NORDVPN_CLI_TIMEOUT_MS  Tiempo máximo de espera para la conexión del CLI.`);
+                `  NORDVPN_CLI_TIMEOUT_MS  Tiempo máximo de espera para la conexión del CLI.\n\n` +
+                `El archivo de configuración permite definir múltiples URLs (scraper.urls) y credenciales ` +
+                `de NordVPN, incluyendo el campo nordvpn.preferredLocation.`);
 }
 
 function maskProxyUrl(proxyUrl) {
@@ -601,16 +977,46 @@ async function extractAndExport(options) {
 
         const {
                 url,
+                urls = [],
                 useNordVPN,
                 useNordVpnCli,
                 nordVpnProxyUrl,
                 nordVpnCliServer,
                 nordVpnCliTimeoutMs,
+                loadedConfigPath,
+                proxyValidationError,
         } = options;
 
-        if (!url) {
+        if (loadedConfigPath) {
+                console.log(`Configuración cargada desde: ${loadedConfigPath}`);
+        }
+
+        const urlSet = new Set();
+        const urlsToProcess = [];
+
+        const pushUrl = (candidate) => {
+                if (typeof candidate !== "string") {
+                        return;
+                }
+                const trimmed = candidate.trim();
+                if (!trimmed || urlSet.has(trimmed)) {
+                        return;
+                }
+                urlSet.add(trimmed);
+                urlsToProcess.push(trimmed);
+        };
+
+        pushUrl(url);
+
+        if (Array.isArray(urls)) {
+                for (const item of urls) {
+                        pushUrl(item);
+                }
+        }
+
+        if (urlsToProcess.length === 0) {
                 console.error(
-                        "Debes proporcionar una URL con --url o la variable de entorno SCRAPER_URL."
+                        "Debes proporcionar al menos una URL mediante --url, SCRAPER_URL o el archivo de configuración."
                 );
                 process.exitCode = 1;
                 return;
@@ -637,8 +1043,8 @@ async function extractAndExport(options) {
         let proxyUrlToUse = "";
 
         if (useNordVPN) {
-                if (options.proxyValidationError) {
-                        console.error(options.proxyValidationError);
+                if (proxyValidationError) {
+                        console.error(proxyValidationError);
                         process.exitCode = 1;
                         return;
                 }
@@ -648,7 +1054,7 @@ async function extractAndExport(options) {
                                 "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
                         );
                         console.error(
-                                "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
+                                "Configura NORDVPN_PROXY_URL, el archivo de configuración o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
                         );
                         process.exitCode = 1;
                         return;
@@ -658,83 +1064,143 @@ async function extractAndExport(options) {
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
         }
 
-        try {
-                const response = await fetchWithOptionalProxy(url, {
-                        headers: requestHeaders,
-                        proxyUrl: proxyUrlToUse || undefined,
-                });
+        const aggregatedLinks = [];
+        const perUrlStats = [];
 
-                if (response.statusCode === 200) {
-                        console.log("Página cargada correctamente.");
-                } else {
-                        console.log("Error al cargar la página. Status:", response.statusCode);
-                        return;
-                }
+        for (const targetUrl of urlsToProcess) {
+                console.log(`\nProcesando: ${targetUrl}`);
 
-                const scripts = extractLinksDataScripts(response.body);
+                try {
+                        const response = await fetchWithOptionalProxy(targetUrl, {
+                                headers: requestHeaders,
+                                proxyUrl: proxyUrlToUse || undefined,
+                        });
 
-                if (scripts.length === 0) {
-                        console.log("No se encontró la variable 'linksData' en los scripts.");
-                        return;
-                }
-
-                for (const script of scripts) {
-                        console.log(`Script encontrado en el índice ${script.index}.`);
-                        try {
-                                const linksData = extractLinksDataFromScript(script.content);
-
-                                if (!linksData || !Array.isArray(linksData.links)) {
-                                        continue;
-                                }
-
+                        if (response.statusCode === 200) {
+                                console.log("Página cargada correctamente.");
+                        } else {
                                 console.log(
-                                        "Datos originales encontrados:",
-                                        linksData.links.length,
-                                        "enlaces"
+                                        `Error al cargar la página (${targetUrl}). Status: ${response.statusCode}`
                                 );
+                                continue;
+                        }
 
-                                const cleanedLinks = linksData.links.filter((link) => {
-                                        if (!link || typeof link.url !== "string") {
-                                                return false;
+                        const scripts = extractLinksDataScripts(response.body);
+
+                        if (scripts.length === 0) {
+                                console.log(
+                                        "No se encontró la variable 'linksData' en los scripts para esta URL."
+                                );
+                                continue;
+                        }
+
+                        let exportedForUrl = 0;
+
+                        for (const script of scripts) {
+                                console.log(`Script encontrado en el índice ${script.index}.`);
+                                try {
+                                        const linksData = extractLinksDataFromScript(script.content);
+
+                                        if (!linksData || !Array.isArray(linksData.links)) {
+                                                continue;
                                         }
-                                        const urlWithoutPrefix = link.url.replace("acestream://", "");
-                                        return urlWithoutPrefix.length > 0;
-                                });
 
-                                let m3uContent = "#EXTM3U\n";
+                                        console.log(
+                                                "Datos originales encontrados:",
+                                                linksData.links.length,
+                                                "enlaces"
+                                        );
 
-                                cleanedLinks.forEach((link) => {
-                                        const name = link.name || "Canal";
-                                        m3uContent += `#EXTINF:-1 group-title="${name}" tvg-id="${name}",${name}\n`;
-                                        m3uContent += `${link.url}\n`;
-                                });
+                                        const cleanedLinks = linksData.links
+                                                .filter((link) => {
+                                                        if (!link || typeof link.url !== "string") {
+                                                                return false;
+                                                        }
+                                                        const urlWithoutPrefix = link.url.replace(
+                                                                "acestream://",
+                                                                ""
+                                                        );
+                                                        return urlWithoutPrefix.length > 0;
+                                                })
+                                                .map((link) => ({
+                                                        name: link.name || "Canal",
+                                                        url: link.url,
+                                                }));
 
-                                fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
-                                console.log("Archivo M3U generado con éxito como 'playlist.m3u'");
+                                        if (cleanedLinks.length === 0) {
+                                                continue;
+                                        }
 
-                                console.log("\nEstadísticas de exportación:");
-                                console.log(`- Total de enlaces exportados: ${cleanedLinks.length}`);
-                                console.log("- Estructura del archivo M3U generado:");
-                                console.log("  - Encabezado: #EXTM3U");
-                                console.log("  - Por cada canal:");
+                                        aggregatedLinks.push(...cleanedLinks);
+                                        exportedForUrl += cleanedLinks.length;
+                                } catch (parseError) {
+                                        console.error(
+                                                "Error al interpretar la estructura linksData:",
+                                                parseError
+                                        );
+                                }
+                        }
+
+                        if (exportedForUrl > 0) {
+                                perUrlStats.push({ url: targetUrl, count: exportedForUrl });
                                 console.log(
-                                        "    - Línea de información con group-title, tvg-id y nombre"
+                                        `Total de enlaces exportados para esta URL: ${exportedForUrl}`
                                 );
-                                console.log("    - URL del stream");
-
-                                return;
-                        } catch (parseError) {
-                                console.error(
-                                        "Error al interpretar la estructura linksData:",
-                                        parseError
+                        } else {
+                                console.log(
+                                        "No se pudo procesar ningún script con 'linksData' para esta URL."
                                 );
                         }
+                } catch (error) {
+                        console.error(`Error al obtener la página (${targetUrl}):`, error.message);
                 }
-
-                console.log("No se pudo procesar ningún script con 'linksData'.");
-        } catch (error) {
-                console.error("Error al obtener la página:", error.message);
         }
+
+        if (aggregatedLinks.length === 0) {
+                console.log(
+                        "No se pudo generar el archivo M3U porque no se encontraron enlaces válidos."
+                );
+                return;
+        }
+
+        const uniqueLinks = [];
+        const seenUrls = new Set();
+
+        for (const link of aggregatedLinks) {
+                if (!link.url || seenUrls.has(link.url)) {
+                        continue;
+                }
+                seenUrls.add(link.url);
+                uniqueLinks.push(link);
+        }
+
+        let m3uContent = "#EXTM3U\n";
+
+        uniqueLinks.forEach((link) => {
+                const name = link.name || "Canal";
+                m3uContent += `#EXTINF:-1 group-title="${name}" tvg-id="${name}",${name}\n`;
+                m3uContent += `${link.url}\n`;
+        });
+
+        if (!m3uContent.endsWith("\n")) {
+                m3uContent += "\n";
+        }
+
+        fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
+        console.log("\nArchivo M3U generado con éxito como 'playlist.m3u'");
+
+        console.log("\nEstadísticas de exportación:");
+        console.log(`- Total de enlaces exportados: ${uniqueLinks.length}`);
+
+        for (const stat of perUrlStats) {
+                console.log(`- ${stat.url}: ${stat.count} enlaces encontrados`);
+        }
+
+        console.log("- Estructura del archivo M3U generado:");
+        console.log("  - Encabezado: #EXTM3U");
+        console.log("  - Por cada canal:");
+        console.log("    - Línea de información con group-title, tvg-id y nombre");
+        console.log("    - URL del stream");
 }
 
 const options = parseCliArgs();
