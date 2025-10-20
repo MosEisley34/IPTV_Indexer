@@ -93,6 +93,34 @@ node main.js \
 
 > **Note:** The script uses the `https-proxy-agent` module to route HTTP and HTTPS requests. Make sure the NordVPN proxy you configure supports the required protocol.
 
+### Using the NordVPN CLI
+
+If you prefer to let the official NordVPN CLI manage the connection, enable the CLI workflow. The script will call `nordvpn connect` and wait for the VPN to be fully connected before performing the scraping request. This is helpful when you want to use system-wide routing instead of the HTTP proxy. Setting `NORDVPN_CLI_SERVER` is optional—omit it to let NordVPN pick the best server automatically.
+
+```bash
+USE_NORDVPN_CLI=true \
+NORDVPN_CLI_SERVER="us1234" \
+node main.js --url="https://example.com/iptv-page"
+```
+
+Or use CLI flags:
+
+```bash
+node main.js \
+  --url="https://example.com/iptv-page" \
+  --use-nordvpn-cli \
+  --nordvpn-cli="us1234" \
+  --nordvpn-cli-timeout=90000
+```
+
+When the CLI workflow is enabled, the following happens before the Axios request is made:
+
+1. `nordvpn status` is executed to check the current state.
+2. If not connected, `nordvpn connect` is executed (optionally with the server name you provided).
+3. The scraper polls `nordvpn status` until the connection is confirmed or the timeout is reached.
+
+If the CLI binary is missing, returns an error, or the connection is not established in time, the scraper logs the failure and exits gracefully so you can inspect the CLI output.
+
 ## Example Output
 
 The generated M3U playlist is structured as follows:
