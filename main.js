@@ -1,70 +1,13 @@
-const axios = require("axios");
-const { wrapper } = require("axios-cookiejar-support");
-const cheerio = require("cheerio");
 const fs = require("fs");
 const vm = require("vm");
+const http = require("http");
+const https = require("https");
+const tls = require("tls");
 const { execFile } = require("child_process");
-const { HttpsProxyAgent } = require("https-proxy-agent");
-const { CookieJar } = require("tough-cookie");
 
 const DEFAULT_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-
-function parseHeaderString(rawHeaders) {
-        if (!rawHeaders) {
-                return {};
-        }
-
-        const headers = {};
-        const segments = rawHeaders
-                .split(/\r?\n|;(?![^\"]*\")(?=[^:;]+:)/)
-                .map((segment) => segment.trim())
-                .filter(Boolean);
-
-        for (const segment of segments) {
-                const separatorIndex = segment.indexOf(":");
-                if (separatorIndex === -1) {
-                        continue;
-                }
-
-                const key = segment.slice(0, separatorIndex).trim();
-                const value = segment.slice(separatorIndex + 1).trim();
-                if (key) {
-                        headers[key] = value;
-                }
-        }
-
-        return headers;
-}
-
-function seedCookies(jar, cookieString, targets) {
-        if (!cookieString) {
-                return;
-        }
-
-        const cookies = cookieString
-                .split(";")
-                .map((cookie) => cookie.trim())
-                .filter(Boolean);
-
-        for (const target of targets) {
-                if (!target) {
-                        continue;
-                }
-
-                for (const cookie of cookies) {
-                        try {
-                                jar.setCookieSync(cookie, target);
-                        } catch (error) {
-                                console.warn(
-                                        `No se pudo registrar la cookie '${cookie}' para ${target}:`,
-                                        error.message
-                                );
-                        }
-                }
-        }
-}
 
 function safeDecodeURIComponent(value) {
         if (typeof value !== "string" || value.length === 0) {
@@ -174,6 +117,10 @@ function normalizeProxyUrl(rawUrl) {
                 if (error) {
                         return { error: `Proxy URL inválida: ${error.message}` };
                 }
+        }
+
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+                return { error: "Solo se admiten proxies HTTP o HTTPS." };
         }
 
         return { url: buildProxyUrlFromParsed(parsed) };
@@ -319,84 +266,39 @@ function execNordVpn(args, timeoutMs = 15000) {
                                 enrichedError.killed = error.killed;
                                 return reject(enrichedError);
                         }
-
                         resolve({ stdout, stderr });
                 });
         });
 }
 
-function isNordVpnConnected(statusOutput, server) {
-        const normalizedOutput = statusOutput.toLowerCase();
-        if (!normalizedOutput.includes("status")) {
+function isNordVpnConnected(cliOutput, expectedServer) {
+        const normalizedOutput = cliOutput.toLowerCase();
+
+        if (!normalizedOutput.includes("status: connected")) {
                 return false;
         }
 
-        if (!normalizedOutput.includes("connected")) {
-                return false;
+        if (!expectedServer) {
+                return true;
         }
 
-        if (server) {
-                const normalizedServer = server.toLowerCase();
-                return (
-                        normalizedOutput.includes(normalizedServer) ||
-                        normalizedOutput.includes(`country: ${normalizedServer}`)
-                );
-        }
-
-        return true;
+        return normalizedOutput.includes(expectedServer.toLowerCase());
 }
 
 async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
-        console.log("[NordVPN CLI] Verificando estado actual...");
+        console.log("[NordVPN CLI] Iniciando verificación de conexión...");
 
         try {
-                const { stdout } = await execNordVpn(["status"], timeoutMs);
-                if (isNordVpnConnected(stdout, server)) {
-                        console.log("[NordVPN CLI] Ya existe una conexión activa.");
-                        return;
-                }
+                await execNordVpn(["connect", server].filter(Boolean), timeoutMs);
         } catch (error) {
-                if (error.code === "ENOENT") {
-                        throw new Error(
-                                "No se encontró el binario 'nordvpn'. Asegúrate de tener el CLI instalado y en el PATH."
-                        );
-                }
-                console.warn(
-                        `[NordVPN CLI] No se pudo obtener el estado inicial (${error.message}). Se intentará conectar...`
-                );
-        }
-
-        console.log(
-                `[NordVPN CLI] Conectando${server ? ` al servidor '${server}'` : ""}...`
-        );
-
-        const connectArgs = ["connect"];
-        if (server) {
-                connectArgs.push(server);
-        }
-
-        try {
-                const { stdout, stderr } = await execNordVpn(connectArgs, timeoutMs);
-                if (stdout.trim()) {
-                        console.log("[NordVPN CLI]", stdout.trim());
-                }
-                if (stderr.trim()) {
-                        console.warn("[NordVPN CLI]", stderr.trim());
-                }
-        } catch (error) {
-                if (error.stdout) {
-                        console.error("[NordVPN CLI] STDOUT:", error.stdout.trim());
-                }
-                if (error.stderr) {
-                        console.error("[NordVPN CLI] STDERR:", error.stderr.trim());
-                }
                 throw new Error(
-                        `[NordVPN CLI] Error al ejecutar el comando de conexión: ${error.message}`
+                        `[NordVPN CLI] No se pudo iniciar la conexión: ${error.message}. ` +
+                                (error.stderr ? `Detalles: ${error.stderr}` : "")
                 );
         }
 
+        const pollInterval = 2000;
         const start = Date.now();
-        const pollInterval = 3000;
 
         while (Date.now() - start < timeoutMs) {
                 try {
@@ -418,6 +320,277 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
         throw new Error(
                 `[NordVPN CLI] Tiempo de espera agotado tras ${timeoutMs} ms esperando la conexión.`
         );
+}
+
+function collectStream(stream) {
+        return new Promise((resolve, reject) => {
+                const chunks = [];
+                stream.on("data", (chunk) => {
+                        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                });
+                stream.on("end", () => {
+                        resolve(Buffer.concat(chunks));
+                });
+                stream.on("error", (error) => {
+                        reject(error);
+                });
+        });
+}
+
+function parseRawHeaders(headerText) {
+        const headers = {};
+        const lines = headerText.split(/\r?\n/).filter(Boolean);
+
+        for (const line of lines) {
+                const separatorIndex = line.indexOf(":");
+
+                if (separatorIndex === -1) {
+                        continue;
+                }
+
+                const key = line.slice(0, separatorIndex).trim().toLowerCase();
+                const value = line.slice(separatorIndex + 1).trim();
+
+                if (headers[key]) {
+                        if (Array.isArray(headers[key])) {
+                                headers[key].push(value);
+                        } else {
+                                headers[key] = [headers[key], value];
+                        }
+                } else {
+                        headers[key] = value;
+                }
+        }
+
+        return headers;
+}
+
+function performDirectRequest(urlObject, headers) {
+        return new Promise((resolve, reject) => {
+                const isHttps = urlObject.protocol === "https:";
+                const transport = isHttps ? https : http;
+                const request = transport.request(
+                        {
+                                protocol: urlObject.protocol,
+                                hostname: urlObject.hostname,
+                                port: urlObject.port || (isHttps ? 443 : 80),
+                                path: `${urlObject.pathname || "/"}${urlObject.search || ""}`,
+                                method: "GET",
+                                headers: {
+                                        ...headers,
+                                        Host: urlObject.host,
+                                        Connection: "close",
+                                },
+                        },
+                        (response) => {
+                                collectStream(response)
+                                        .then((buffer) => {
+                                                resolve({
+                                                        statusCode: response.statusCode || 0,
+                                                        headers: response.headers,
+                                                        body: buffer.toString("utf8"),
+                                                });
+                                        })
+                                        .catch(reject);
+                        }
+                );
+
+                request.on("error", reject);
+                request.end();
+        });
+}
+
+function getProxyAuthorizationHeader(proxyObject) {
+        if (!proxyObject.username && !proxyObject.password) {
+                return null;
+        }
+
+        const user = proxyObject.username ? safeDecodeURIComponent(proxyObject.username) : "";
+        const pass = proxyObject.password ? safeDecodeURIComponent(proxyObject.password) : "";
+        const token = Buffer.from(`${user}:${pass}`).toString("base64");
+        return `Basic ${token}`;
+}
+
+function performHttpRequestThroughProxy(urlObject, proxyObject, headers) {
+        return new Promise((resolve, reject) => {
+                const proxyTransport = proxyObject.protocol === "https:" ? https : http;
+                const authorization = getProxyAuthorizationHeader(proxyObject);
+                const requestHeaders = {
+                        ...headers,
+                        Host: urlObject.host,
+                        Connection: "close",
+                };
+
+                if (authorization) {
+                        requestHeaders["Proxy-Authorization"] = authorization;
+                }
+
+                const request = proxyTransport.request(
+                        {
+                                protocol: proxyObject.protocol,
+                                hostname: proxyObject.hostname,
+                                port: proxyObject.port || (proxyObject.protocol === "https:" ? 443 : 80),
+                                method: "GET",
+                                path: urlObject.toString(),
+                                headers: requestHeaders,
+                        },
+                        (response) => {
+                                collectStream(response)
+                                        .then((buffer) => {
+                                                resolve({
+                                                        statusCode: response.statusCode || 0,
+                                                        headers: response.headers,
+                                                        body: buffer.toString("utf8"),
+                                                });
+                                        })
+                                        .catch(reject);
+                        }
+                );
+
+                request.on("error", reject);
+                request.end();
+        });
+}
+
+function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
+        return new Promise((resolve, reject) => {
+                const proxyTransport = proxyObject.protocol === "https:" ? https : http;
+                const authorization = getProxyAuthorizationHeader(proxyObject);
+                const connectHeaders = {};
+
+                if (authorization) {
+                        connectHeaders["Proxy-Authorization"] = authorization;
+                }
+
+                const connectRequest = proxyTransport.request({
+                        protocol: proxyObject.protocol,
+                        hostname: proxyObject.hostname,
+                        port: proxyObject.port || (proxyObject.protocol === "https:" ? 443 : 80),
+                        method: "CONNECT",
+                        path: `${urlObject.hostname}:${urlObject.port || 443}`,
+                        headers: connectHeaders,
+                });
+
+                connectRequest.once("connect", (response, socket) => {
+                        if (response.statusCode !== 200) {
+                                socket.destroy();
+                                reject(
+                                        new Error(
+                                                `Proxy CONNECT falló con código ${response.statusCode}`
+                                        )
+                                );
+                                return;
+                        }
+
+                        const tlsSocket = tls.connect({
+                                socket,
+                                servername: urlObject.hostname,
+                        });
+
+                        tlsSocket.once("error", reject);
+
+                        tlsSocket.once("secureConnect", () => {
+                                const requestLines = [
+                                        `GET ${urlObject.pathname || "/"}${urlObject.search || ""} HTTP/1.1`,
+                                        `Host: ${urlObject.host}`,
+                                        "Connection: close",
+                                ];
+
+                                for (const [key, value] of Object.entries(headers)) {
+                                        requestLines.push(`${key}: ${value}`);
+                                }
+
+                                requestLines.push("", "");
+                                tlsSocket.write(requestLines.join("\r\n"));
+                        });
+
+                        collectStream(tlsSocket)
+                                .then((buffer) => {
+                                        const separator = buffer.indexOf(Buffer.from("\r\n\r\n"));
+
+                                        if (separator === -1) {
+                                                throw new Error("Respuesta inválida del servidor HTTPS.");
+                                        }
+
+                                        const headerText = buffer
+                                                .slice(0, separator)
+                                                .toString("utf8");
+                                        const bodyBuffer = buffer.slice(separator + 4);
+                                        const statusLine = headerText.split(/\r?\n/, 1)[0] || "";
+                                        const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/i);
+                                        const statusCode = statusMatch ? Number(statusMatch[1]) : 0;
+                                        const headersObject = parseRawHeaders(
+                                                headerText.replace(/^.*?\r?\n/, "")
+                                        );
+
+                                        resolve({
+                                                statusCode,
+                                                headers: headersObject,
+                                                body: bodyBuffer.toString("utf8"),
+                                        });
+                                })
+                                .catch(reject)
+                                .finally(() => {
+                                        tlsSocket.end();
+                                });
+                });
+
+                connectRequest.on("error", reject);
+                connectRequest.end();
+        });
+}
+
+async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
+        const urlObject = new URL(url);
+        const requestHeaders = {
+                ...headers,
+        };
+
+        if (!requestHeaders["User-Agent"]) {
+                requestHeaders["User-Agent"] = DEFAULT_USER_AGENT;
+        }
+
+        if (!proxyUrl) {
+                return performDirectRequest(urlObject, requestHeaders);
+        }
+
+        const proxyObject = new URL(proxyUrl);
+
+        if (urlObject.protocol === "http:") {
+                return performHttpRequestThroughProxy(urlObject, proxyObject, requestHeaders);
+        }
+
+        return performHttpsRequestThroughProxy(urlObject, proxyObject, requestHeaders);
+}
+
+function extractLinksDataScripts(html) {
+        const results = [];
+        const scriptRegex = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+        let match;
+        let index = 0;
+
+        while ((match = scriptRegex.exec(html)) !== null) {
+                const content = match[1];
+                if (content && content.includes("linksData")) {
+                        results.push({ index, content });
+                }
+                index += 1;
+        }
+
+        return results;
+}
+
+function extractLinksDataFromScript(scriptContent) {
+        const regex = /(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
+        const match = scriptContent.match(regex);
+
+        if (!match) {
+                return null;
+        }
+
+        const linksDataString = match[1];
+
+        return vm.runInNewContext(`(${linksDataString})`, {});
 }
 
 async function extractAndExport(options) {
@@ -456,12 +629,12 @@ async function extractAndExport(options) {
                 }
         }
 
-        const requestConfig = {
-                headers: {
-                        "User-Agent":
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                },
+        const requestHeaders = {
+                "User-Agent": DEFAULT_USER_AGENT,
+                Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         };
+
+        let proxyUrlToUse = "";
 
         if (useNordVPN) {
                 if (options.proxyValidationError) {
@@ -481,119 +654,86 @@ async function extractAndExport(options) {
                         return;
                 }
 
+                proxyUrlToUse = nordVpnProxyUrl;
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
-
-                let proxyAgent;
-
-                try {
-                        proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
-                } catch (error) {
-                        console.error(
-                                `Proxy URL inválida: ${error.message}. Revisa tus credenciales o el formato del proxy.`
-                        );
-                        process.exitCode = 1;
-                        return;
-                }
-
-                requestConfig.httpAgent = proxyAgent;
-                requestConfig.httpsAgent = proxyAgent;
-                requestConfig.proxy = false;
         }
 
         try {
-                const response = await axiosInstance.get(url, requestConfig);
+                const response = await fetchWithOptionalProxy(url, {
+                        headers: requestHeaders,
+                        proxyUrl: proxyUrlToUse || undefined,
+                });
 
-                if (response.status === 200) {
+                if (response.statusCode === 200) {
                         console.log("Página cargada correctamente.");
                 } else {
-                        console.log("Error al cargar la página. Status:", response.status);
+                        console.log("Error al cargar la página. Status:", response.statusCode);
                         return;
                 }
 
-                const $ = cheerio.load(response.data);
+                const scripts = extractLinksDataScripts(response.body);
 
-                let found = false;
-                $("script").each((index, element) => {
-                        const scriptContent = $(element).html();
-
-                        if (scriptContent && scriptContent.includes("linksData")) {
-                                console.log(`Script encontrado en el índice ${index}.`);
-
-                                const regex =
-                                        /(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
-                                const match = scriptContent.match(regex);
-
-                                if (match) {
-                                        const linksDataString = match[1];
-
-                                        try {
-                                                const linksData = vm.runInNewContext(
-                                                        `(${linksDataString})`,
-                                                        {}
-                                                );
-                                                console.log(
-                                                        "Datos originales encontrados:",
-                                                        linksData.links.length,
-                                                        "enlaces"
-                                                );
-
-                                                const cleanedLinks = linksData.links.filter((link) => {
-                                                        const urlWithoutPrefix = link.url.replace(
-                                                                "acestream://",
-                                                                ""
-                                                        );
-                                                        return urlWithoutPrefix.length > 0;
-                                                });
-
-                                                let m3uContent = "#EXTM3U\n";
-
-                                                cleanedLinks.forEach((link) => {
-                                                        m3uContent += `#EXTINF:-1 group-title="${link.name}" tvg-id="${link.name}",${link.name}\n`;
-                                                        m3uContent += `${link.url}\n`;
-                                                });
-
-                                                fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
-                                                console.log(
-                                                        "Archivo M3U generado con éxito como 'playlist.m3u'"
-                                                );
-
-                                                console.log("\nEstadísticas de exportación:");
-                                                console.log(
-                                                        `- Total de enlaces exportados: ${cleanedLinks.length}`
-                                                );
-                                                console.log("- Estructura del archivo M3U generado:");
-                                                console.log("  - Encabezado: #EXTM3U");
-                                                console.log("  - Por cada canal:");
-                                                console.log(
-                                                        "    - Línea de información con group-title, tvg-id y nombre"
-                                                );
-                                                console.log("    - URL del stream");
-
-                                                found = true;
-                                        } catch (parseError) {
-                                                console.error(
-                                                        "Error al interpretar la estructura linksData:",
-                                                        parseError
-                                                );
-                                        }
-                                }
-                        }
-                });
-
-                if (!found) {
-                        console.log(
-                                "No se encontró la variable 'linksData' en los scripts."
-                        );
+                if (scripts.length === 0) {
+                        console.log("No se encontró la variable 'linksData' en los scripts.");
+                        return;
                 }
+
+                for (const script of scripts) {
+                        console.log(`Script encontrado en el índice ${script.index}.`);
+                        try {
+                                const linksData = extractLinksDataFromScript(script.content);
+
+                                if (!linksData || !Array.isArray(linksData.links)) {
+                                        continue;
+                                }
+
+                                console.log(
+                                        "Datos originales encontrados:",
+                                        linksData.links.length,
+                                        "enlaces"
+                                );
+
+                                const cleanedLinks = linksData.links.filter((link) => {
+                                        if (!link || typeof link.url !== "string") {
+                                                return false;
+                                        }
+                                        const urlWithoutPrefix = link.url.replace("acestream://", "");
+                                        return urlWithoutPrefix.length > 0;
+                                });
+
+                                let m3uContent = "#EXTM3U\n";
+
+                                cleanedLinks.forEach((link) => {
+                                        const name = link.name || "Canal";
+                                        m3uContent += `#EXTINF:-1 group-title="${name}" tvg-id="${name}",${name}\n`;
+                                        m3uContent += `${link.url}\n`;
+                                });
+
+                                fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
+                                console.log("Archivo M3U generado con éxito como 'playlist.m3u'");
+
+                                console.log("\nEstadísticas de exportación:");
+                                console.log(`- Total de enlaces exportados: ${cleanedLinks.length}`);
+                                console.log("- Estructura del archivo M3U generado:");
+                                console.log("  - Encabezado: #EXTM3U");
+                                console.log("  - Por cada canal:");
+                                console.log(
+                                        "    - Línea de información con group-title, tvg-id y nombre"
+                                );
+                                console.log("    - URL del stream");
+
+                                return;
+                        } catch (parseError) {
+                                console.error(
+                                        "Error al interpretar la estructura linksData:",
+                                        parseError
+                                );
+                        }
+                }
+
+                console.log("No se pudo procesar ningún script con 'linksData'.");
         } catch (error) {
                 console.error("Error al obtener la página:", error.message);
-                if (error.response) {
-                        console.error("Detalles de la respuesta:", {
-                                status: error.response.status,
-                                headers: error.response.headers,
-                                data: error.response.data,
-                        });
-                }
         }
 }
 
