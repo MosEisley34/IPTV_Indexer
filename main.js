@@ -6,6 +6,10 @@ const vm = require("vm");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 const { CookieJar } = require("tough-cookie");
 
+const DEFAULT_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+
 function parseHeaderString(rawHeaders) {
         if (!rawHeaders) {
                 return {};
@@ -13,7 +17,7 @@ function parseHeaderString(rawHeaders) {
 
         const headers = {};
         const segments = rawHeaders
-                .split(/\r?\n|;/)
+                .split(/\r?\n|;(?![^\"]*\")(?=[^:;]+:)/)
                 .map((segment) => segment.trim())
                 .filter(Boolean);
 
@@ -22,6 +26,7 @@ function parseHeaderString(rawHeaders) {
                 if (separatorIndex === -1) {
                         continue;
                 }
+
                 const key = segment.slice(0, separatorIndex).trim();
                 const value = segment.slice(separatorIndex + 1).trim();
                 if (key) {
@@ -46,6 +51,7 @@ function seedCookies(jar, cookieString, targets) {
                 if (!target) {
                         continue;
                 }
+
                 for (const cookie of cookies) {
                         try {
                                 jar.setCookieSync(cookie, target);
@@ -70,6 +76,7 @@ function parseCliArgs() {
                 loginUrl: process.env.LOGIN_URL || "",
                 loginUsername: process.env.LOGIN_USERNAME || "",
                 loginPassword: process.env.LOGIN_PASSWORD || "",
+                loginPayload: process.env.LOGIN_PAYLOAD || "",
                 rawCookies: process.env.SCRAPER_COOKIES || "",
                 rawHeaders: process.env.SCRAPER_HEADERS || "",
         };
@@ -124,6 +131,11 @@ function parseCliArgs() {
                         continue;
                 }
 
+                if (arg.startsWith("--login-payload=")) {
+                        config.loginPayload = arg.slice("--login-payload=".length);
+                        continue;
+                }
+
                 if (arg.startsWith("--cookies=")) {
                         config.rawCookies = arg.slice("--cookies=".length);
                         continue;
@@ -147,6 +159,7 @@ function logHelp() {
                 `  --login-url=<URL>       URL del endpoint de autenticación.\n` +
                 `  --login-username=<USR>  Usuario para autenticarse.\n` +
                 `  --login-password=<PWD>  Contraseña para autenticarse.\n` +
+                `  --login-payload=<JSON>  Carga JSON completa a enviar durante el login.\n` +
                 `  --cookies="..."         Cadena cruda de cookies a enviar.\n` +
                 `  --headers="..."         Cabeceras adicionales (formato Clave: Valor;...).\n` +
                 `  --help                  Muestra esta ayuda.\n\n` +
@@ -160,6 +173,7 @@ function logHelp() {
                 `  LOGIN_URL               Endpoint para iniciar sesión.\n` +
                 `  LOGIN_USERNAME          Usuario para iniciar sesión.\n` +
                 `  LOGIN_PASSWORD          Contraseña para iniciar sesión.\n` +
+                `  LOGIN_PAYLOAD           Carga JSON completa para el login (prioritaria sobre usuario/contraseña).\n` +
                 `  SCRAPER_COOKIES         Cookies crudas a incluir en las peticiones.\n` +
                 `  SCRAPER_HEADERS         Cabeceras extra (formato Clave: Valor;...).`);
 }
@@ -177,6 +191,93 @@ function maskProxyUrl(proxyUrl) {
         }
 }
 
+function buildBaseHeaders(rawHeaders, rawCookies) {
+        const headers = {
+                "User-Agent": DEFAULT_USER_AGENT,
+                ...parseHeaderString(rawHeaders),
+        };
+
+        if (rawCookies && !headers.Cookie) {
+                headers.Cookie = rawCookies;
+        }
+
+        return headers;
+}
+
+function buildRequestConfig({ useNordVPN, nordVpnProxyUrl, headers }) {
+        const config = {
+                headers: { ...headers },
+        };
+
+        if (useNordVPN) {
+                if (!nordVpnProxyUrl) {
+                        throw new Error(
+                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
+                        );
+                }
+
+                const proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
+                config.httpAgent = proxyAgent;
+                config.httpsAgent = proxyAgent;
+                config.proxy = false;
+        }
+
+        return config;
+}
+
+function resolveLoginPayload({ loginUrl, loginPayload, loginUsername, loginPassword }) {
+        if (!loginUrl) {
+                return null;
+        }
+
+        if (loginPayload) {
+                        try {
+                                return JSON.parse(loginPayload);
+                        } catch (error) {
+                                throw new Error(
+                                        `El payload de login proporcionado no es un JSON válido: ${error.message}`
+                                );
+                        }
+        }
+
+        if (!loginUsername && !loginPassword) {
+                throw new Error(
+                        "Se indicó un endpoint de autenticación, pero faltan LOGIN_USERNAME y LOGIN_PASSWORD o LOGIN_PAYLOAD."
+                );
+        }
+
+        if (!loginUsername || !loginPassword) {
+                throw new Error(
+                        "Debes proporcionar tanto LOGIN_USERNAME como LOGIN_PASSWORD para autenticarse."
+                );
+        }
+
+        return {
+                username: loginUsername,
+                password: loginPassword,
+        };
+}
+
+async function performLogin(axiosInstance, loginUrl, payload, baseRequestConfig) {
+        if (!loginUrl || !payload) {
+                return;
+        }
+
+        const loginRequestConfig = {
+                ...baseRequestConfig,
+                headers: {
+                        ...baseRequestConfig.headers,
+                },
+        };
+
+        if (!loginRequestConfig.headers["Content-Type"]) {
+                loginRequestConfig.headers["Content-Type"] = "application/json";
+        }
+
+        const response = await axiosInstance.post(loginUrl, payload, loginRequestConfig);
+        console.log("Autenticación completada. Estado:", response.status);
+}
+
 async function extractAndExport(options) {
         if (options.help) {
                 logHelp();
@@ -188,8 +289,6 @@ async function extractAndExport(options) {
                 useNordVPN,
                 nordVpnProxyUrl,
                 loginUrl,
-                loginUsername,
-                loginPassword,
                 rawCookies,
                 rawHeaders,
         } = options;
@@ -210,78 +309,43 @@ async function extractAndExport(options) {
                 })
         );
 
-        const extraHeaders = parseHeaderString(rawHeaders);
-        const requestHeaders = {
-                "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                ...extraHeaders,
-        };
-
-        if (rawCookies) {
-                requestHeaders.Cookie = rawCookies;
-        }
-
-        const requestConfig = {
-                headers: requestHeaders,
-        };
-
-        if (useNordVPN) {
-                if (!nordVpnProxyUrl) {
-                        console.error(
-                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
-                        );
+        const baseHeaders = buildBaseHeaders(rawHeaders, rawCookies);
+        let baseRequestConfig;
+        try {
+                baseRequestConfig = buildRequestConfig({
+                        useNordVPN,
+                        nordVpnProxyUrl,
+                        headers: baseHeaders,
+                });
+        } catch (error) {
+                console.error(error.message);
+                if (useNordVPN) {
                         console.error(
                                 "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
                         );
-                        process.exitCode = 1;
-                        return;
                 }
+                process.exitCode = 1;
+                return;
+        }
 
+        if (useNordVPN) {
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
-
-                const proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
-                requestConfig.httpAgent = proxyAgent;
-                requestConfig.httpsAgent = proxyAgent;
-                requestConfig.proxy = false;
         }
 
         seedCookies(jar, rawCookies, [loginUrl, url]);
 
-        if (loginUrl) {
-                if (!loginUsername || !loginPassword) {
-                        console.error(
-                                "Se indicó un endpoint de autenticación, pero faltan LOGIN_USERNAME o LOGIN_PASSWORD."
-                        );
-                        process.exitCode = 1;
-                        return;
-                }
+        let loginPayload;
+        try {
+                loginPayload = resolveLoginPayload(options);
+        } catch (error) {
+                console.error(error.message);
+                process.exitCode = 1;
+                return;
+        }
 
+        if (loginPayload) {
                 try {
-                        const loginPayload = {
-                                username: loginUsername,
-                                password: loginPassword,
-                        };
-
-                        const loginConfig = {
-                                ...requestConfig,
-                                headers: {
-                                        ...requestConfig.headers,
-                                        "Content-Type":
-                                                requestConfig.headers["Content-Type"] ||
-                                                "application/json",
-                                },
-                        };
-
-                        const loginResponse = await axiosInstance.post(
-                                loginUrl,
-                                loginPayload,
-                                loginConfig
-                        );
-
-                        console.log(
-                                "Autenticación completada. Estado:",
-                                loginResponse.status
-                        );
+                        await performLogin(axiosInstance, loginUrl, loginPayload, baseRequestConfig);
                 } catch (error) {
                         console.error("Error durante la autenticación:", error.message);
                         if (error.response) {
@@ -297,115 +361,100 @@ async function extractAndExport(options) {
         }
 
         try {
-                // Realizar una solicitud a la página
-                const response = await axiosInstance.get(url, requestConfig);
+                const response = await axiosInstance.get(url, baseRequestConfig);
 
-		// Verificar que la respuesta se obtuvo correctamente
-		if (response.status === 200) {
-			console.log("Página cargada correctamente.");
-		} else {
-			console.log("Error al cargar la página. Status:", response.status);
-			return;
-		}
+                if (response.status === 200) {
+                        console.log("Página cargada correctamente.");
+                } else {
+                        console.log("Error al cargar la página. Status:", response.status);
+                        return;
+                }
 
-		// Cargar el HTML en cheerio
-		const $ = cheerio.load(response.data);
+                const $ = cheerio.load(response.data);
 
-		// Buscar todas las etiquetas <script>
-		let found = false;
-		$("script").each((index, element) => {
-			const scriptContent = $(element).html();
+                let found = false;
+                $("script").each((index, element) => {
+                        const scriptContent = $(element).html();
 
-			// Verificar si el script contiene la variable 'linksData'
-			if (scriptContent && scriptContent.includes("linksData")) {
-				console.log(`Script encontrado en el índice ${index}.`);
+                        if (scriptContent && scriptContent.includes("linksData")) {
+                                console.log(`Script encontrado en el índice ${index}.`);
 
-				// Buscar el patrón de la variable linksData
-				const regex =
-					/(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
-				const match = scriptContent.match(regex);
+                                const regex =
+                                        /(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
+                                const match = scriptContent.match(regex);
 
-				if (match) {
-					// Extraer el contenido de linksData como una cadena JSON
-					const linksDataString = match[1];
+                                if (match) {
+                                        const linksDataString = match[1];
 
                                         try {
-                                                // Interpretar la cadena como un literal de objeto de JavaScript.
                                                 const linksData = vm.runInNewContext(
                                                         `(${linksDataString})`,
                                                         {}
                                                 );
-						console.log(
-							"Datos originales encontrados:",
-							linksData.links.length,
-							"enlaces"
-						);
+                                                console.log(
+                                                        "Datos originales encontrados:",
+                                                        linksData.links.length,
+                                                        "enlaces"
+                                                );
 
-						// Limpiar los datos eliminando enlaces vacíos o con solo el prefijo
-						const cleanedLinks = linksData.links.filter((link) => {
-							const urlWithoutPrefix = link.url.replace(
-								"acestream://",
-								""
-							);
-							return urlWithoutPrefix.length > 0;
-						});
+                                                const cleanedLinks = linksData.links.filter((link) => {
+                                                        const urlWithoutPrefix = link.url.replace(
+                                                                "acestream://",
+                                                                ""
+                                                        );
+                                                        return urlWithoutPrefix.length > 0;
+                                                });
 
-						// Crear el contenido del archivo M3U
-						let m3uContent = "#EXTM3U\n"; // Encabezado del archivo M3U
+                                                let m3uContent = "#EXTM3U\n";
 
-						// Añadir cada entrada al contenido M3U
-						cleanedLinks.forEach((link) => {
-							// Crear la línea de información extendida
-							m3uContent += `#EXTINF:-1 group-title="${link.name}" tvg-id="${link.name}",${link.name}\n`;
-							// Añadir la URL
-							m3uContent += `${link.url}\n`;
-						});
+                                                cleanedLinks.forEach((link) => {
+                                                        m3uContent += `#EXTINF:-1 group-title="${link.name}" tvg-id="${link.name}",${link.name}\n`;
+                                                        m3uContent += `${link.url}\n`;
+                                                });
 
-						// Guardar el archivo M3U
-						fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
-						console.log(
-							"Archivo M3U generado con éxito como 'playlist.m3u'"
-						);
+                                                fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
+                                                console.log(
+                                                        "Archivo M3U generado con éxito como 'playlist.m3u'"
+                                                );
 
-						// Mostrar estadísticas
-						console.log("\nEstadísticas de exportación:");
-						console.log(
-							`- Total de enlaces exportados: ${cleanedLinks.length}`
-						);
-						console.log("- Estructura del archivo M3U generado:");
-						console.log("  - Encabezado: #EXTM3U");
-						console.log("  - Por cada canal:");
-						console.log(
-							"    - Línea de información con group-title, tvg-id y nombre"
-						);
-						console.log("    - URL del stream");
+                                                console.log("\nEstadísticas de exportación:");
+                                                console.log(
+                                                        `- Total de enlaces exportados: ${cleanedLinks.length}`
+                                                );
+                                                console.log("- Estructura del archivo M3U generado:");
+                                                console.log("  - Encabezado: #EXTM3U");
+                                                console.log("  - Por cada canal:");
+                                                console.log(
+                                                        "    - Línea de información con group-title, tvg-id y nombre"
+                                                );
+                                                console.log("    - URL del stream");
 
-						found = true;
+                                                found = true;
                                         } catch (parseError) {
                                                 console.error(
                                                         "Error al interpretar la estructura linksData:",
                                                         parseError
                                                 );
                                         }
-				}
-			}
-		});
+                                }
+                        }
+                });
 
-		if (!found) {
-			console.log(
-				"No se encontró la variable 'linksData' en los scripts."
-			);
-		}
-	} catch (error) {
-		console.error("Error al obtener la página:", error.message);
-		if (error.response) {
-			console.error("Detalles de la respuesta:", {
-				status: error.response.status,
-				headers: error.response.headers,
-				data: error.response.data,
-			});
-		}
-	}
+                if (!found) {
+                        console.log(
+                                "No se encontró la variable 'linksData' en los scripts."
+                        );
+                }
+        } catch (error) {
+                console.error("Error al obtener la página:", error.message);
+                if (error.response) {
+                        console.error("Detalles de la respuesta:", {
+                                status: error.response.status,
+                                headers: error.response.headers,
+                                data: error.response.data,
+                        });
+                }
+        }
 }
 
 const options = parseCliArgs();
