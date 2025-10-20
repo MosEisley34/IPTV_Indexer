@@ -58,6 +58,19 @@ NORDVPN_PROXY_URL="http://usuario:password@proxy.nordvpn.com:89" \
 node main.js --url="https://example.com/iptv-page"
 ```
 
+When your credentials contain reserved characters (such as `@`, `:`, or `/`) you can pass them already encoded, or provide the raw values and let the CLI escape them automatically:
+
+```bash
+# Credenciales pre-codificadas
+NORDVPN_PROXY_URL="http://usuario:pa%40ssword@proxy.nordvpn.com:89" node main.js --use-nordvpn --url="https://example.com/iptv-page"
+
+# Credenciales sin codificar (la herramienta las escapará por ti)
+node main.js \
+  --url="https://example.com/iptv-page" \
+  --use-nordvpn \
+  --nordvpn-proxy="http://usuario:pa@ssword@proxy.nordvpn.com:89"
+```
+
 Alternatively, specify the proxy components individually:
 
 ```bash

@@ -4,6 +4,119 @@ const fs = require("fs");
 const vm = require("vm");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 
+function safeDecodeURIComponent(value) {
+        if (typeof value !== "string" || value.length === 0) {
+                return "";
+        }
+
+        try {
+                return decodeURIComponent(value);
+        } catch (error) {
+                return value;
+        }
+}
+
+function buildProxyUrlFromParsed(parsedUrl) {
+        const hasUser = parsedUrl.username && parsedUrl.username.length > 0;
+        const hasPass = parsedUrl.password && parsedUrl.password.length > 0;
+        const decodedUser = hasUser ? safeDecodeURIComponent(parsedUrl.username) : "";
+        const decodedPass = hasPass ? safeDecodeURIComponent(parsedUrl.password) : "";
+
+        let credentials = "";
+
+        if (hasUser) {
+                credentials += encodeURIComponent(decodedUser);
+        }
+
+        if (hasPass) {
+                credentials += `:${encodeURIComponent(decodedPass)}`;
+        }
+
+        if (hasUser || hasPass) {
+                credentials += "@";
+        }
+
+        const pathname = parsedUrl.pathname === "/" ? "" : parsedUrl.pathname;
+
+        return `${parsedUrl.protocol}//${credentials}${parsedUrl.host}${pathname}${parsedUrl.search}${parsedUrl.hash}`;
+}
+
+function tryEncodeCredentials(rawUrl) {
+        const schemeSeparator = rawUrl.indexOf("://");
+
+        if (schemeSeparator === -1) {
+                return null;
+        }
+
+        const scheme = rawUrl.slice(0, schemeSeparator + 3);
+        const remainder = rawUrl.slice(schemeSeparator + 3);
+        const atIndex = remainder.lastIndexOf("@");
+
+        if (atIndex === -1) {
+                return null;
+        }
+
+        const authPart = remainder.slice(0, atIndex);
+        const hostPart = remainder.slice(atIndex + 1);
+
+        if (!hostPart) {
+                return null;
+        }
+
+        const colonIndex = authPart.indexOf(":");
+        const rawUsername = colonIndex === -1 ? authPart : authPart.slice(0, colonIndex);
+        const rawPassword = colonIndex === -1 ? "" : authPart.slice(colonIndex + 1);
+
+        const decodedUser = rawUsername ? safeDecodeURIComponent(rawUsername) : "";
+        const decodedPass = rawPassword ? safeDecodeURIComponent(rawPassword) : "";
+
+        let credentials = "";
+
+        if (decodedUser) {
+                credentials += encodeURIComponent(decodedUser);
+        }
+
+        if (rawPassword !== "") {
+                credentials += `:${encodeURIComponent(decodedPass)}`;
+        }
+
+        if (credentials.length === 0) {
+                return null;
+        }
+
+        return `${scheme}${credentials}@${hostPart}`;
+}
+
+function normalizeProxyUrl(rawUrl) {
+        if (!rawUrl) {
+                return { url: "" };
+        }
+
+        const tryParse = (value) => {
+                try {
+                        return { parsed: new URL(value) };
+                } catch (error) {
+                        return { error };
+                }
+        };
+
+        let { parsed, error } = tryParse(rawUrl);
+
+        if (error) {
+                const encodedAttempt = tryEncodeCredentials(rawUrl);
+
+                if (encodedAttempt) {
+                        ({ parsed, error } = tryParse(encodedAttempt));
+                }
+
+                if (error) {
+                        return { error: `Proxy URL inválida: ${error.message}` };
+                }
+        }
+
+        return { url: buildProxyUrlFromParsed(parsed) };
+}
+
 function parseCliArgs() {
         const args = process.argv.slice(2);
         const config = {
@@ -47,6 +160,16 @@ function parseCliArgs() {
                 if (arg.startsWith("--nordvpn-proxy=")) {
                         config.nordVpnProxyUrl = arg.slice("--nordvpn-proxy=".length);
                         continue;
+                }
+        }
+
+        if (config.nordVpnProxyUrl) {
+                const normalized = normalizeProxyUrl(config.nordVpnProxyUrl);
+
+                if (normalized.error) {
+                        config.proxyValidationError = normalized.error;
+                } else {
+                        config.nordVpnProxyUrl = normalized.url;
                 }
         }
 
@@ -106,6 +229,12 @@ async function extractAndExport(options) {
         };
 
         if (useNordVPN) {
+                if (options.proxyValidationError) {
+                        console.error(options.proxyValidationError);
+                        process.exitCode = 1;
+                        return;
+                }
+
                 if (!nordVpnProxyUrl) {
                         console.error(
                                 "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
@@ -119,7 +248,18 @@ async function extractAndExport(options) {
 
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
 
-                const proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
+                let proxyAgent;
+
+                try {
+                        proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
+                } catch (error) {
+                        console.error(
+                                `Proxy URL inválida: ${error.message}. Revisa tus credenciales o el formato del proxy.`
+                        );
+                        process.exitCode = 1;
+                        return;
+                }
+
                 requestConfig.httpAgent = proxyAgent;
                 requestConfig.httpsAgent = proxyAgent;
                 requestConfig.proxy = false;
