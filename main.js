@@ -173,7 +173,7 @@ function parseSimpleYaml(content) {
                 if (trimmed.startsWith("- ")) {
                         if (!Array.isArray(parent)) {
                                 throw new Error(
-                                        `Se encontró un elemento de lista inesperado en la línea ${i + 1}`
+                                        `Unexpected list item encountered on line ${i + 1}`
                                 );
                         }
 
@@ -278,7 +278,7 @@ function loadConfigFile(configPath) {
                 return { data: parsed, path: resolvedPath, exists: true };
         } catch (error) {
                 console.warn(
-                        `No se pudo cargar el archivo de configuración (${resolvedPath}): ${error.message}`
+                        `Failed to load configuration file (${resolvedPath}): ${error.message}`
                 );
                 return { data: {}, path: resolvedPath, exists: false };
         }
@@ -497,7 +497,7 @@ function askQuestion(question, { defaultValue = "", hidden = false, trim = true,
 }
 
 async function askBoolean(question, defaultValue = false) {
-        const hint = defaultValue ? "S/n" : "s/N";
+        const hint = defaultValue ? "Y/n" : "y/N";
 
         while (true) {
                 const answer = await askQuestion(`${question} (${hint})`, {
@@ -510,7 +510,7 @@ async function askBoolean(question, defaultValue = false) {
                         return defaultValue;
                 }
 
-                if (["s", "si", "sí", "y", "yes"].includes(normalized)) {
+                if (["y", "yes"].includes(normalized)) {
                         return true;
                 }
 
@@ -518,7 +518,7 @@ async function askBoolean(question, defaultValue = false) {
                         return false;
                 }
 
-                console.log("Respuesta no válida. Responde con 's' para sí o 'n' para no.");
+                console.log("Invalid response. Please answer with 'y' for yes or 'n' for no.");
         }
 }
 
@@ -539,12 +539,12 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
         const nordConfig = isPlainObject(existingConfig.nordvpn) ? existingConfig.nordvpn : {};
 
         console.log("===============================================");
-        console.log(" Asistente de configuración de IPTV Indexer");
+        console.log(" IPTV Indexer Setup Wizard");
         console.log("===============================================\n");
-        console.log(`El archivo de configuración se guardará en: ${resolvedPath}\n`);
+        console.log(`The configuration file will be saved to: ${resolvedPath}\n`);
 
         const existingUrls = Array.isArray(scraperConfig.urls) ? scraperConfig.urls : [];
-        const urlsAnswer = await askQuestion("Introduce las URLs de scraping separadas por coma", {
+        const urlsAnswer = await askQuestion("Enter the scraping URLs separated by commas", {
                 defaultValue: existingUrls.join(", "),
         });
         const urls = splitList(urlsAnswer);
@@ -552,7 +552,7 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
         const existingCredentials = Array.isArray(scraperConfig.credentials)
                 ? scraperConfig.credentials
                 : [];
-        const credentialsCountAnswer = await askQuestion("¿Cuántos sitios requieren credenciales?", {
+        const credentialsCountAnswer = await askQuestion("How many sites require credentials?", {
                 defaultValue: String(existingCredentials.length || 0),
         });
         let credentialsCount = Number(credentialsCountAnswer);
@@ -567,19 +567,19 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
                 const existingEntry = existingCredentials[i] && isPlainObject(existingCredentials[i])
                         ? existingCredentials[i]
                         : {};
-                const site = await askQuestion(`Sitio #${i + 1} (dominio)`, {
+                const site = await askQuestion(`Site #${i + 1} (domain)`, {
                         defaultValue: existingEntry.site || "",
                 });
-                const loginUrl = await askQuestion(`URL de inicio de sesión para el sitio #${i + 1}`, {
+                const loginUrl = await askQuestion(`Login URL for site #${i + 1}`, {
                         defaultValue: existingEntry.loginUrl || "",
                 });
-                const username = await askQuestion(`Usuario para ${site || `el sitio #${i + 1}`}`, {
+                const username = await askQuestion(`Username for ${site || `site #${i + 1}`}`, {
                         defaultValue: existingEntry.username || "",
                 });
                 console.log(
-                        "Introduce la contraseña (deja vacío para mantener la actual, escribe CLEAR para eliminarla)."
+                        "Enter the password (leave blank to keep the current value, type CLEAR to remove it)."
                 );
-                const passwordAnswer = await askQuestion("Contraseña", {
+                const passwordAnswer = await askQuestion("Password", {
                         hidden: true,
                         trim: false,
                 });
@@ -626,13 +626,13 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
                 originalOutputFormat = scraperConfig.outputFormat.trim().toLowerCase();
         }
 
-        const formatAnswer = await askQuestion("Formato de salida (m3u/json)", {
+        const formatAnswer = await askQuestion("Output format (m3u/json)", {
                 defaultValue: originalOutputFormat || "m3u",
         });
         let outputFormat = formatAnswer.trim().toLowerCase();
 
         if (!outputFormat || !["m3u", "json"].includes(outputFormat)) {
-                console.log("Formato no reconocido. Se utilizará 'm3u'.");
+                console.log("Unrecognized format. Defaulting to 'm3u'.");
                 outputFormat = "m3u";
         }
 
@@ -651,12 +651,12 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
                 suggestedOutputFile = outputFormat === "json" ? "playlist.json" : "playlist.m3u";
         }
 
-        const outputFile = await askQuestion("Nombre del archivo de salida", {
+        const outputFile = await askQuestion("Output filename", {
                 defaultValue: suggestedOutputFile,
         });
 
         const useProxyDefault = typeof nordConfig.useProxy === "boolean" ? nordConfig.useProxy : false;
-        const useProxy = await askBoolean("¿Deseas usar el proxy de NordVPN?", useProxyDefault);
+        const useProxy = await askBoolean("Do you want to use the NordVPN proxy?", useProxyDefault);
         const proxySource = isPlainObject(nordConfig.proxy) ? nordConfig.proxy : {};
         const proxyHostDefault =
                 proxySource.host || proxySource.hostname || nordConfig.host || "";
@@ -668,22 +668,22 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
         let proxySettings;
 
         if (useProxy) {
-                const proxyProtocol = await askQuestion("Protocolo del proxy (http/https)", {
+                const proxyProtocol = await askQuestion("Proxy protocol (http/https)", {
                         defaultValue: String(proxyProtocolDefault || "http"),
                 });
-                const proxyHost = await askQuestion("Host del proxy", {
+                const proxyHost = await askQuestion("Proxy host", {
                         defaultValue: proxyHostDefault || "",
                 });
-                const proxyPortAnswer = await askQuestion("Puerto del proxy", {
+                const proxyPortAnswer = await askQuestion("Proxy port", {
                         defaultValue: proxyPortDefault ? String(proxyPortDefault) : "",
                 });
-                const proxyUsername = await askQuestion("Usuario del proxy (opcional)", {
+                const proxyUsername = await askQuestion("Proxy username (optional)", {
                         defaultValue: proxyUserDefault || "",
                 });
                 console.log(
-                        "Introduce la contraseña del proxy (deja vacío para mantenerla, escribe CLEAR para eliminarla)."
+                        "Enter the proxy password (leave blank to keep it, type CLEAR to remove it)."
                 );
-                const proxyPasswordAnswer = await askQuestion("Contraseña del proxy", {
+                const proxyPasswordAnswer = await askQuestion("Proxy password", {
                         hidden: true,
                         trim: false,
                 });
@@ -724,7 +724,7 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
 
         const useCliDefault = typeof nordConfig.useCli === "boolean" ? nordConfig.useCli : false;
         const useCli = await askBoolean(
-                "¿Deseas que el script ejecute el CLI oficial de NordVPN?",
+                "Do you want the script to run the official NordVPN CLI?",
                 useCliDefault
         );
         let cliServer = "";
@@ -733,12 +733,12 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
         if (useCli) {
                 const cliServerDefault =
                         nordConfig.cliServer || nordConfig.preferredLocation || "";
-                cliServer = await askQuestion("Servidor o localización para el CLI (opcional)", {
+                cliServer = await askQuestion("CLI server or location (optional)", {
                         defaultValue: cliServerDefault,
                 });
                 const cliTimeoutDefault =
                         nordConfig.cliTimeoutMs !== undefined ? String(nordConfig.cliTimeoutMs) : "";
-                const timeoutAnswer = await askQuestion("Tiempo máximo de espera del CLI (ms)", {
+                const timeoutAnswer = await askQuestion("CLI timeout (ms)", {
                         defaultValue: cliTimeoutDefault,
                 });
                 const parsedTimeout = Number(timeoutAnswer);
@@ -851,16 +851,16 @@ async function runSetupWizard({ configPath, existingConfig = {} }) {
 
         writeConfigFile(resolvedPath, finalConfig);
 
-        console.log("\nConfiguración guardada correctamente. Resumen:");
-        console.log(`- Archivo: ${resolvedPath}`);
-        console.log(`- URLs configuradas: ${urls.length}`);
-        console.log(`- Credenciales almacenadas: ${credentials.length}`);
-        console.log(`- Formato de salida: ${outputFormat.toUpperCase()} (${outputFile})`);
-        console.log(`- NordVPN via proxy: ${useProxy ? 'habilitado' : 'deshabilitado'}`);
-        console.log(`- NordVPN CLI: ${useCli ? 'habilitado' : 'deshabilitado'}`);
+        console.log("\nConfiguration saved successfully. Summary:");
+        console.log(`- File: ${resolvedPath}`);
+        console.log(`- Configured URLs: ${urls.length}`);
+        console.log(`- Stored credentials: ${credentials.length}`);
+        console.log(`- Output format: ${outputFormat.toUpperCase()} (${outputFile})`);
+        console.log(`- NordVPN via proxy: ${useProxy ? 'enabled' : 'disabled'}`);
+        console.log(`- NordVPN CLI: ${useCli ? 'enabled' : 'disabled'}`);
 
         if (urls.length === 0) {
-                console.warn("\nADVERTENCIA: no se configuraron URLs. El scraper no podrá ejecutarse correctamente.");
+                console.warn("\nWARNING: no URLs were configured. The scraper will not run correctly.");
         }
 
         return finalConfig;
@@ -972,12 +972,12 @@ function normalizeProxyUrl(rawUrl) {
                 }
 
                 if (error) {
-                        return { error: `Proxy URL inválida: ${error.message}` };
+                        return { error: `Invalid proxy URL: ${error.message}` };
                 }
         }
 
         if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-                return { error: "Solo se admiten proxies HTTP o HTTPS." };
+                return { error: "Only HTTP or HTTPS proxies are supported." };
         }
 
         return { url: buildProxyUrlFromParsed(parsed) };
@@ -1278,35 +1278,35 @@ function parseCliArgs() {
 }
 
 function logHelp() {
-        console.log(`Uso: node main.js --url=<URL> [opciones]\n\n` +
-                `Opciones:\n` +
-                `  --url=<URL>             URL que se desea analizar (también SCRAPER_URL).\n` +
-                `  --config=<ruta>         Ruta al archivo YAML de configuración (por defecto ./config.yaml).\n` +
-                `  --output-format=<fmt>   Formato de salida (m3u o json).\n` +
-                `  --output-file=<ruta>    Archivo de salida para la playlist.\n` +
-                `  --use-nordvpn           Fuerza el uso del proxy de NordVPN.\n` +
-                `  --nordvpn-proxy=<URL>   URL completa del proxy (p. ej. http://usuario:pass@host:puerto).\n` +
-                `  --use-nordvpn-cli       Inicia y verifica la conexión usando el CLI oficial de NordVPN.\n` +
-                `  --nordvpn-cli=<server>  Conecta mediante CLI al servidor especificado.\n` +
-                `  --nordvpn-cli-timeout=<ms> Tiempo máximo para que el CLI conecte (por defecto 60000 ms).\n` +
-                `  --setup                 Inicia el asistente interactivo para generar config.yaml.\n` +
-                `  --help                  Muestra esta ayuda.\n\n` +
-                `Variables de entorno:\n` +
-                `  CONFIG_FILE             Ruta al archivo YAML de configuración.\n` +
-                `  SCRAPER_CONFIG          Alias de CONFIG_FILE.\n` +
-                `  OUTPUT_FORMAT           Forzar el formato de salida (m3u/json).\n` +
-                `  OUTPUT_FILE             Definir el archivo de salida.\n` +
-                `  USE_NORDVPN=true        Activa el uso de NordVPN.\n` +
-                `  NORDVPN_PROXY_URL       Proxy HTTP(S) proporcionado por NordVPN.\n` +
-                `  NORDVPN_PROXY_HOST      Host del proxy de NordVPN.\n` +
-                `  NORDVPN_PROXY_PORT      Puerto del proxy de NordVPN.\n` +
-                `  NORDVPN_USERNAME        Usuario del proxy (si aplica).\n` +
-                `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).\n` +
-                `  USE_NORDVPN_CLI=true    Ejecuta el CLI de NordVPN antes de iniciar el scraping.\n` +
-                `  NORDVPN_CLI_SERVER      Servidor al que se conectará el CLI (opcional).\n` +
-                `  NORDVPN_CLI_TIMEOUT_MS  Tiempo máximo de espera para la conexión del CLI.\n\n` +
-                `El archivo de configuración permite definir múltiples URLs (scraper.urls) y credenciales ` +
-                `de NordVPN, incluyendo parámetros como nordvpn.cliServer.`);
+        console.log(`Usage: node main.js --url=<URL> [options]\n\n` +
+                `Options:\n` +
+                `  --url=<URL>             URL to scrape (also SCRAPER_URL).\n` +
+                `  --config=<path>         Path to the YAML configuration file (default ./config.yaml).\n` +
+                `  --output-format=<fmt>   Output format (m3u or json).\n` +
+                `  --output-file=<path>    Output file for the playlist.\n` +
+                `  --use-nordvpn           Force the use of the NordVPN proxy.\n` +
+                `  --nordvpn-proxy=<URL>   Full proxy URL (e.g. http://user:pass@host:port).\n` +
+                `  --use-nordvpn-cli       Start and verify the connection using the NordVPN CLI.\n` +
+                `  --nordvpn-cli=<server>  Connect via CLI to the specified server.\n` +
+                `  --nordvpn-cli-timeout=<ms> Max time for the CLI to connect (default 60000 ms).\n` +
+                `  --setup                 Launch the interactive wizard to generate config.yaml.\n` +
+                `  --help                  Show this help message.\n\n` +
+                `Environment variables:\n` +
+                `  CONFIG_FILE             Path to the YAML configuration file.\n` +
+                `  SCRAPER_CONFIG          Alias for CONFIG_FILE.\n` +
+                `  OUTPUT_FORMAT           Force the output format (m3u/json).\n` +
+                `  OUTPUT_FILE             Set the output file.\n` +
+                `  USE_NORDVPN=true        Enable the use of NordVPN.\n` +
+                `  NORDVPN_PROXY_URL       HTTP(S) proxy provided by NordVPN.\n` +
+                `  NORDVPN_PROXY_HOST      NordVPN proxy host.\n` +
+                `  NORDVPN_PROXY_PORT      NordVPN proxy port.\n` +
+                `  NORDVPN_USERNAME        Proxy username (if applicable).\n` +
+                `  NORDVPN_PASSWORD        Proxy password (if applicable).\n` +
+                `  USE_NORDVPN_CLI=true    Run the NordVPN CLI before scraping.\n` +
+                `  NORDVPN_CLI_SERVER      Server the CLI should connect to (optional).\n` +
+                `  NORDVPN_CLI_TIMEOUT_MS  Max wait time for the CLI connection.\n\n` +
+                `The configuration file can define multiple URLs (scraper.urls) and NordVPN credentials, ` +
+                `including parameters such as nordvpn.cliServer.`);
 }
 
 function maskProxyUrl(proxyUrl) {
@@ -1327,7 +1327,7 @@ function execNordVpn(args, timeoutMs = 15000) {
                 execFile("nordvpn", args, { timeout: timeoutMs }, (error, stdout, stderr) => {
                         if (error) {
                                 const enrichedError = new Error(
-                                        `Error ejecutando 'nordvpn ${args.join(" ")}'. ${error.message}`
+                                        `Error running 'nordvpn ${args.join(" ")}'. ${error.message}`
                                 );
                                 enrichedError.stdout = stdout;
                                 enrichedError.stderr = stderr;
@@ -1355,14 +1355,14 @@ function isNordVpnConnected(cliOutput, expectedServer) {
 }
 
 async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
-        console.log("[NordVPN CLI] Iniciando verificación de conexión...");
+        console.log("[NordVPN CLI] Starting connection verification...");
 
         try {
                 await execNordVpn(["connect", server].filter(Boolean), timeoutMs);
         } catch (error) {
                 throw new Error(
-                        `[NordVPN CLI] No se pudo iniciar la conexión: ${error.message}. ` +
-                                (error.stderr ? `Detalles: ${error.stderr}` : "")
+                        `[NordVPN CLI] Failed to start the connection: ${error.message}. ` +
+                                (error.stderr ? `Details: ${error.stderr}` : "")
                 );
         }
 
@@ -1373,13 +1373,13 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
                 try {
                         const { stdout } = await execNordVpn(["status"], timeoutMs);
                         if (isNordVpnConnected(stdout, server)) {
-                                console.log("[NordVPN CLI] Conexión establecida correctamente.");
+                                console.log("[NordVPN CLI] Connection established successfully.");
                                 return;
                         }
-                        console.log("[NordVPN CLI] Aún conectando...", stdout.trim());
+                        console.log("[NordVPN CLI] Still connecting...", stdout.trim());
                 } catch (error) {
                         console.warn(
-                                `[NordVPN CLI] Error al verificar el estado (${error.message}). Se seguirá intentando...`
+                                `[NordVPN CLI] Error checking status (${error.message}). Will keep trying...`
                         );
                 }
 
@@ -1387,7 +1387,7 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
         }
 
         throw new Error(
-                `[NordVPN CLI] Tiempo de espera agotado tras ${timeoutMs} ms esperando la conexión.`
+                `[NordVPN CLI] Timed out after ${timeoutMs} ms while waiting for the connection.`
         );
 }
 
@@ -1545,7 +1545,7 @@ function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
                                 socket.destroy();
                                 reject(
                                         new Error(
-                                                `Proxy CONNECT falló con código ${response.statusCode}`
+                                                `Proxy CONNECT failed with status code ${response.statusCode}`
                                         )
                                 );
                                 return;
@@ -1578,7 +1578,7 @@ function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
                                         const separator = buffer.indexOf(Buffer.from("\r\n\r\n"));
 
                                         if (separator === -1) {
-                                                throw new Error("Respuesta inválida del servidor HTTPS.");
+                                                throw new Error("Invalid response from HTTPS server.");
                                         }
 
                                         const headerText = buffer
@@ -1683,14 +1683,14 @@ async function extractAndExport(options) {
         } = options;
 
         if (loadedConfigPath) {
-                console.log(`Configuración cargada desde: ${loadedConfigPath}`);
+                console.log(`Configuration loaded from: ${loadedConfigPath}`);
         }
 
         const normalizedOutputFormat = (outputFormat || "m3u").toLowerCase();
         const normalizedOutputFile = outputFile ||
                 (normalizedOutputFormat === "json" ? "playlist.json" : "playlist.m3u");
         console.log(
-                `Formato de salida seleccionado: ${normalizedOutputFormat.toUpperCase()} (${normalizedOutputFile})`
+                `Selected output format: ${normalizedOutputFormat.toUpperCase()} (${normalizedOutputFile})`
         );
 
         const urlSet = new Set();
@@ -1718,7 +1718,7 @@ async function extractAndExport(options) {
 
         if (urlsToProcess.length === 0) {
                 console.error(
-                        "Debes proporcionar al menos una URL mediante --url, SCRAPER_URL o el archivo de configuración."
+                        "You must provide at least one URL via --url, SCRAPER_URL, or the configuration file."
                 );
                 process.exitCode = 1;
                 return;
@@ -1753,24 +1753,24 @@ async function extractAndExport(options) {
 
                 if (!nordVpnProxyUrl) {
                         console.error(
-                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
+                                "NordVPN usage is enabled, but no valid proxy was provided."
                         );
                         console.error(
-                                "Configura NORDVPN_PROXY_URL, el archivo de configuración o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
+                                "Set NORDVPN_PROXY_URL, update the configuration file, or use --nordvpn-proxy=http://user:pass@host:port"
                         );
                         process.exitCode = 1;
                         return;
                 }
 
                 proxyUrlToUse = nordVpnProxyUrl;
-                console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
+                console.log("Using NordVPN via proxy:", maskProxyUrl(nordVpnProxyUrl));
         }
 
         const aggregatedLinks = [];
         const perUrlStats = [];
 
         for (const targetUrl of urlsToProcess) {
-                console.log(`\nProcesando: ${targetUrl}`);
+                console.log(`\nProcessing: ${targetUrl}`);
 
                 try {
                         const response = await fetchWithOptionalProxy(targetUrl, {
@@ -1779,10 +1779,10 @@ async function extractAndExport(options) {
                         });
 
                         if (response.statusCode === 200) {
-                                console.log("Página cargada correctamente.");
+                                console.log("Page loaded successfully.");
                         } else {
                                 console.log(
-                                        `Error al cargar la página (${targetUrl}). Status: ${response.statusCode}`
+                                        `Error loading page (${targetUrl}). Status: ${response.statusCode}`
                                 );
                                 continue;
                         }
@@ -1791,7 +1791,7 @@ async function extractAndExport(options) {
 
                         if (scripts.length === 0) {
                                 console.log(
-                                        "No se encontró la variable 'linksData' en los scripts para esta URL."
+                                        "Could not find the 'linksData' variable in any scripts for this URL."
                                 );
                                 continue;
                         }
@@ -1799,7 +1799,7 @@ async function extractAndExport(options) {
                         let exportedForUrl = 0;
 
                         for (const script of scripts) {
-                                console.log(`Script encontrado en el índice ${script.index}.`);
+                                console.log(`Script found at index ${script.index}.`);
                                 try {
                                         const linksData = extractLinksDataFromScript(script.content);
 
@@ -1808,9 +1808,9 @@ async function extractAndExport(options) {
                                         }
 
                                         console.log(
-                                                "Datos originales encontrados:",
+                                                "Original data contains:",
                                                 linksData.links.length,
-                                                "enlaces"
+                                                "links"
                                         );
 
                                         const cleanedLinks = linksData.links
@@ -1825,7 +1825,7 @@ async function extractAndExport(options) {
                                                         return urlWithoutPrefix.length > 0;
                                                 })
                                                 .map((link) => ({
-                                                        name: link.name || "Canal",
+                                                        name: link.name || "Channel",
                                                         url: link.url,
                                                 }));
 
@@ -1837,7 +1837,7 @@ async function extractAndExport(options) {
                                         exportedForUrl += cleanedLinks.length;
                                 } catch (parseError) {
                                         console.error(
-                                                "Error al interpretar la estructura linksData:",
+                                                "Error parsing the linksData structure:",
                                                 parseError
                                         );
                                 }
@@ -1846,21 +1846,21 @@ async function extractAndExport(options) {
                         if (exportedForUrl > 0) {
                                 perUrlStats.push({ url: targetUrl, count: exportedForUrl });
                                 console.log(
-                                        `Total de enlaces exportados para esta URL: ${exportedForUrl}`
+                                        `Total links exported for this URL: ${exportedForUrl}`
                                 );
                         } else {
                                 console.log(
-                                        "No se pudo procesar ningún script con 'linksData' para esta URL."
+                                        "No script containing 'linksData' could be processed for this URL."
                                 );
                         }
                 } catch (error) {
-                        console.error(`Error al obtener la página (${targetUrl}):`, error.message);
+                        console.error(`Error fetching page (${targetUrl}):`, error.message);
                 }
         }
 
         if (aggregatedLinks.length === 0) {
                 console.log(
-                        "No se pudo generar el archivo de salida porque no se encontraron enlaces válidos."
+                        "Could not generate the output file because no valid links were found."
                 );
                 return;
         }
@@ -1883,12 +1883,12 @@ async function extractAndExport(options) {
                 const payload = { channels: uniqueLinks };
                 const jsonContent = JSON.stringify(payload, null, 2);
                 fs.writeFileSync(outputPath, `${jsonContent}\n`, "utf8");
-                console.log(`\nArchivo JSON generado con éxito como '${normalizedOutputFile}'`);
+                console.log(`\nJSON file generated successfully as '${normalizedOutputFile}'`);
         } else {
                 let m3uContent = "#EXTM3U\n";
 
                 uniqueLinks.forEach((link) => {
-                        const name = link.name || "Canal";
+                        const name = link.name || "Channel";
                         m3uContent += `#EXTINF:-1 group-title="${name}" tvg-id="${name}",${name}\n`;
                         m3uContent += `${link.url}\n`;
                 });
@@ -1898,28 +1898,28 @@ async function extractAndExport(options) {
                 }
 
                 fs.writeFileSync(outputPath, m3uContent, "utf8");
-                console.log(`\nArchivo M3U generado con éxito como '${normalizedOutputFile}'`);
+                console.log(`\nM3U file generated successfully as '${normalizedOutputFile}'`);
         }
 
-        console.log("\nEstadísticas de exportación:");
-        console.log(`- Total de enlaces exportados: ${uniqueLinks.length}`);
+        console.log("\nExport statistics:");
+        console.log(`- Total links exported: ${uniqueLinks.length}`);
 
         for (const stat of perUrlStats) {
-                console.log(`- ${stat.url}: ${stat.count} enlaces encontrados`);
+                console.log(`- ${stat.url}: ${stat.count} links found`);
         }
 
         if (normalizedOutputFormat === "json") {
-                console.log("- Estructura del archivo JSON generado:");
+                console.log("- Structure of the generated JSON file:");
                 console.log("  {");
                 console.log("    \"channels\": [");
-                console.log("      { \"name\": \"Canal\", \"url\": \"acestream://...\" }");
+                console.log("      { \"name\": \"Channel\", \"url\": \"acestream://...\" }");
                 console.log("    ]");
                 console.log("  }");
         } else {
-                console.log("- Estructura del archivo M3U generado:");
-                console.log("  - Encabezado: #EXTM3U");
-                console.log("  - Por cada canal:");
-                console.log("    - Línea de información con group-title, tvg-id y nombre");
-                console.log("    - URL del stream");
+                console.log("- Structure of the generated M3U file:");
+                console.log("  - Header: #EXTM3U");
+                console.log("  - For each channel:");
+                console.log("    - Info line with group-title, tvg-id, and name");
+                console.log("    - Stream URL");
         }
 }

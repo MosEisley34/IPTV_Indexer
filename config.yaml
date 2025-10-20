@@ -1,4 +1,4 @@
-# Configuración de ejemplo para IPTV_Indexer
+# Sample configuration for IPTV_Indexer
 scraper:
   urls:
     - https://securestreaming.example.com/iptv-list
