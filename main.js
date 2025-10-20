@@ -1,6 +1,7 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
 const fs = require("fs");
+const vm = require("vm");
 
 async function extractAndExport() {
 	try {
@@ -42,9 +43,12 @@ async function extractAndExport() {
 					// Extraer el contenido de linksData como una cadena JSON
 					const linksDataString = match[1];
 
-					try {
-						// Parsear el JSON
-						const linksData = JSON.parse(linksDataString);
+                                        try {
+                                                // Interpretar la cadena como un literal de objeto de JavaScript.
+                                                const linksData = vm.runInNewContext(
+                                                        `(${linksDataString})`,
+                                                        {}
+                                                );
 						console.log(
 							"Datos originales encontrados:",
 							linksData.links.length,
@@ -91,9 +95,12 @@ async function extractAndExport() {
 						console.log("    - URL del stream");
 
 						found = true;
-					} catch (parseError) {
-						console.error("Error al parsear el JSON:", parseError);
-					}
+                                        } catch (parseError) {
+                                                console.error(
+                                                        "Error al interpretar la estructura linksData:",
+                                                        parseError
+                                                );
+                                        }
 				}
 			}
 		});
