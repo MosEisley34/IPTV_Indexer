@@ -3,6 +3,9 @@ scraper:
   urls:
     - https://securestreaming.example.com/iptv-list
     - https://iptv-demo.example.net/channels
+  output:
+    format: m3u
+    file: playlist.m3u
   credentials:
     - site: securestreaming.example.com
       loginUrl: https://securestreaming.example.com/api/login
@@ -22,5 +25,5 @@ nordvpn:
     username: YOUR_NORDVPN_USERNAME
     password: YOUR_NORDVPN_PASSWORD
   useCli: true
-  preferredLocation: us
+  cliServer: us
   cliTimeoutMs: 60000
