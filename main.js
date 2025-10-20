@@ -2,6 +2,7 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const fs = require("fs");
 const vm = require("vm");
+const { execFile } = require("child_process");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 
 function parseCliArgs() {
@@ -11,8 +12,20 @@ function parseCliArgs() {
                 useNordVPN:
                         process.env.USE_NORDVPN === "true" ||
                         process.env.USE_NORDVPN === "1",
+                useNordVpnCli:
+                        process.env.USE_NORDVPN_CLI === "true" ||
+                        process.env.USE_NORDVPN_CLI === "1",
                 nordVpnProxyUrl: process.env.NORDVPN_PROXY_URL || "",
+                nordVpnCliServer: process.env.NORDVPN_CLI_SERVER || "",
+                nordVpnCliTimeoutMs:
+                        process.env.NORDVPN_CLI_TIMEOUT_MS
+                                ? Number(process.env.NORDVPN_CLI_TIMEOUT_MS)
+                                : undefined,
         };
+
+        if (Number.isNaN(config.nordVpnCliTimeoutMs)) {
+                config.nordVpnCliTimeoutMs = undefined;
+        }
 
         const nordVpnHost = process.env.NORDVPN_PROXY_HOST;
         const nordVpnPort = process.env.NORDVPN_PROXY_PORT;
@@ -48,6 +61,27 @@ function parseCliArgs() {
                         config.nordVpnProxyUrl = arg.slice("--nordvpn-proxy=".length);
                         continue;
                 }
+
+                if (arg === "--use-nordvpn-cli") {
+                        config.useNordVpnCli = true;
+                        continue;
+                }
+
+                if (arg.startsWith("--nordvpn-cli=")) {
+                        config.useNordVpnCli = true;
+                        config.nordVpnCliServer = arg.slice("--nordvpn-cli=".length);
+                        continue;
+                }
+
+                if (arg.startsWith("--nordvpn-cli-timeout=")) {
+                        const timeoutMs = Number(
+                                arg.slice("--nordvpn-cli-timeout=".length)
+                        );
+                        if (!Number.isNaN(timeoutMs)) {
+                                config.nordVpnCliTimeoutMs = timeoutMs;
+                        }
+                        continue;
+                }
         }
 
         return config;
@@ -59,6 +93,9 @@ function logHelp() {
                 `  --url=<URL>             URL que se desea analizar (también SCRAPER_URL).\n` +
                 `  --use-nordvpn           Fuerza el uso del proxy de NordVPN.\n` +
                 `  --nordvpn-proxy=<URL>   URL completa del proxy (p. ej. http://usuario:pass@host:puerto).\n` +
+                `  --use-nordvpn-cli       Inicia y verifica la conexión usando el CLI oficial de NordVPN.\n` +
+                `  --nordvpn-cli=<server>  Conecta mediante CLI al servidor especificado.\n` +
+                `  --nordvpn-cli-timeout=<ms> Tiempo máximo para que el CLI conecte (por defecto 60000 ms).\n` +
                 `  --help                  Muestra esta ayuda.\n\n` +
                 `Variables de entorno:\n` +
                 `  USE_NORDVPN=true        Activa el uso de NordVPN.\n` +
@@ -66,7 +103,10 @@ function logHelp() {
                 `  NORDVPN_PROXY_HOST      Host del proxy de NordVPN.\n` +
                 `  NORDVPN_PROXY_PORT      Puerto del proxy de NordVPN.\n` +
                 `  NORDVPN_USERNAME        Usuario del proxy (si aplica).\n` +
-                `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).`);
+                `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).\n` +
+                `  USE_NORDVPN_CLI=true    Ejecuta el CLI de NordVPN antes de iniciar el scraping.\n` +
+                `  NORDVPN_CLI_SERVER      Servidor al que se conectará el CLI (opcional).\n` +
+                `  NORDVPN_CLI_TIMEOUT_MS  Tiempo máximo de espera para la conexión del CLI.`);
 }
 
 function maskProxyUrl(proxyUrl) {
@@ -82,13 +122,134 @@ function maskProxyUrl(proxyUrl) {
         }
 }
 
+function execNordVpn(args, timeoutMs = 15000) {
+        return new Promise((resolve, reject) => {
+                execFile("nordvpn", args, { timeout: timeoutMs }, (error, stdout, stderr) => {
+                        if (error) {
+                                const enrichedError = new Error(
+                                        `Error ejecutando 'nordvpn ${args.join(" ")}'. ${error.message}`
+                                );
+                                enrichedError.stdout = stdout;
+                                enrichedError.stderr = stderr;
+                                enrichedError.code = error.code;
+                                enrichedError.killed = error.killed;
+                                return reject(enrichedError);
+                        }
+
+                        resolve({ stdout, stderr });
+                });
+        });
+}
+
+function isNordVpnConnected(statusOutput, server) {
+        const normalizedOutput = statusOutput.toLowerCase();
+        if (!normalizedOutput.includes("status")) {
+                return false;
+        }
+
+        if (!normalizedOutput.includes("connected")) {
+                return false;
+        }
+
+        if (server) {
+                const normalizedServer = server.toLowerCase();
+                return (
+                        normalizedOutput.includes(normalizedServer) ||
+                        normalizedOutput.includes(`country: ${normalizedServer}`)
+                );
+        }
+
+        return true;
+}
+
+async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
+        console.log("[NordVPN CLI] Verificando estado actual...");
+
+        try {
+                const { stdout } = await execNordVpn(["status"], timeoutMs);
+                if (isNordVpnConnected(stdout, server)) {
+                        console.log("[NordVPN CLI] Ya existe una conexión activa.");
+                        return;
+                }
+        } catch (error) {
+                if (error.code === "ENOENT") {
+                        throw new Error(
+                                "No se encontró el binario 'nordvpn'. Asegúrate de tener el CLI instalado y en el PATH."
+                        );
+                }
+                console.warn(
+                        `[NordVPN CLI] No se pudo obtener el estado inicial (${error.message}). Se intentará conectar...`
+                );
+        }
+
+        console.log(
+                `[NordVPN CLI] Conectando${server ? ` al servidor '${server}'` : ""}...`
+        );
+
+        const connectArgs = ["connect"];
+        if (server) {
+                connectArgs.push(server);
+        }
+
+        try {
+                const { stdout, stderr } = await execNordVpn(connectArgs, timeoutMs);
+                if (stdout.trim()) {
+                        console.log("[NordVPN CLI]", stdout.trim());
+                }
+                if (stderr.trim()) {
+                        console.warn("[NordVPN CLI]", stderr.trim());
+                }
+        } catch (error) {
+                if (error.stdout) {
+                        console.error("[NordVPN CLI] STDOUT:", error.stdout.trim());
+                }
+                if (error.stderr) {
+                        console.error("[NordVPN CLI] STDERR:", error.stderr.trim());
+                }
+                throw new Error(
+                        `[NordVPN CLI] Error al ejecutar el comando de conexión: ${error.message}`
+                );
+        }
+
+        const start = Date.now();
+        const pollInterval = 3000;
+
+        while (Date.now() - start < timeoutMs) {
+                try {
+                        const { stdout } = await execNordVpn(["status"], timeoutMs);
+                        if (isNordVpnConnected(stdout, server)) {
+                                console.log("[NordVPN CLI] Conexión establecida correctamente.");
+                                return;
+                        }
+                        console.log("[NordVPN CLI] Aún conectando...", stdout.trim());
+                } catch (error) {
+                        console.warn(
+                                `[NordVPN CLI] Error al verificar el estado (${error.message}). Se seguirá intentando...`
+                        );
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        }
+
+        throw new Error(
+                `[NordVPN CLI] Tiempo de espera agotado tras ${timeoutMs} ms esperando la conexión.`
+        );
+}
+
 async function extractAndExport(options) {
         if (options.help) {
                 logHelp();
                 return;
         }
 
-        const { url, useNordVPN, nordVpnProxyUrl } = options;
+        const {
+                url,
+                useNordVPN,
+                useNordVpnCli,
+                nordVpnProxyUrl,
+                nordVpnCliServer,
+                nordVpnCliTimeoutMs,
+        } = options;
 
         if (!url) {
                 console.error(
@@ -96,6 +257,19 @@ async function extractAndExport(options) {
                 );
                 process.exitCode = 1;
                 return;
+        }
+
+        if (useNordVpnCli) {
+                try {
+                        await ensureNordVpnCliConnection({
+                                server: nordVpnCliServer,
+                                timeoutMs: nordVpnCliTimeoutMs || 60000,
+                        });
+                } catch (error) {
+                        console.error(error.message);
+                        process.exitCode = 1;
+                        return;
+                }
         }
 
         const requestConfig = {
