@@ -1,9 +1,70 @@
 const axios = require("axios");
+const { wrapper } = require("axios-cookiejar-support");
 const cheerio = require("cheerio");
 const fs = require("fs");
 const vm = require("vm");
 const { execFile } = require("child_process");
 const { HttpsProxyAgent } = require("https-proxy-agent");
+const { CookieJar } = require("tough-cookie");
+
+const DEFAULT_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+
+function parseHeaderString(rawHeaders) {
+        if (!rawHeaders) {
+                return {};
+        }
+
+        const headers = {};
+        const segments = rawHeaders
+                .split(/\r?\n|;(?![^\"]*\")(?=[^:;]+:)/)
+                .map((segment) => segment.trim())
+                .filter(Boolean);
+
+        for (const segment of segments) {
+                const separatorIndex = segment.indexOf(":");
+                if (separatorIndex === -1) {
+                        continue;
+                }
+
+                const key = segment.slice(0, separatorIndex).trim();
+                const value = segment.slice(separatorIndex + 1).trim();
+                if (key) {
+                        headers[key] = value;
+                }
+        }
+
+        return headers;
+}
+
+function seedCookies(jar, cookieString, targets) {
+        if (!cookieString) {
+                return;
+        }
+
+        const cookies = cookieString
+                .split(";")
+                .map((cookie) => cookie.trim())
+                .filter(Boolean);
+
+        for (const target of targets) {
+                if (!target) {
+                        continue;
+                }
+
+                for (const cookie of cookies) {
+                        try {
+                                jar.setCookieSync(cookie, target);
+                        } catch (error) {
+                                console.warn(
+                                        `No se pudo registrar la cookie '${cookie}' para ${target}:`,
+                                        error.message
+                                );
+                        }
+                }
+        }
+}
 
 function safeDecodeURIComponent(value) {
         if (typeof value !== "string" || value.length === 0) {
@@ -416,11 +477,14 @@ async function extractAndExport(options) {
                         console.error(
                                 "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
                         );
-                        process.exitCode = 1;
-                        return;
                 }
+                process.exitCode = 1;
+                return;
+        }
 
+        if (useNordVPN) {
                 console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
+        }
 
                 let proxyAgent;
 
@@ -440,115 +504,100 @@ async function extractAndExport(options) {
         }
 
         try {
-                // Realizar una solicitud a la página
-                const response = await axios.get(url, requestConfig);
+                const response = await axiosInstance.get(url, baseRequestConfig);
 
-		// Verificar que la respuesta se obtuvo correctamente
-		if (response.status === 200) {
-			console.log("Página cargada correctamente.");
-		} else {
-			console.log("Error al cargar la página. Status:", response.status);
-			return;
-		}
+                if (response.status === 200) {
+                        console.log("Página cargada correctamente.");
+                } else {
+                        console.log("Error al cargar la página. Status:", response.status);
+                        return;
+                }
 
-		// Cargar el HTML en cheerio
-		const $ = cheerio.load(response.data);
+                const $ = cheerio.load(response.data);
 
-		// Buscar todas las etiquetas <script>
-		let found = false;
-		$("script").each((index, element) => {
-			const scriptContent = $(element).html();
+                let found = false;
+                $("script").each((index, element) => {
+                        const scriptContent = $(element).html();
 
-			// Verificar si el script contiene la variable 'linksData'
-			if (scriptContent && scriptContent.includes("linksData")) {
-				console.log(`Script encontrado en el índice ${index}.`);
+                        if (scriptContent && scriptContent.includes("linksData")) {
+                                console.log(`Script encontrado en el índice ${index}.`);
 
-				// Buscar el patrón de la variable linksData
-				const regex =
-					/(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
-				const match = scriptContent.match(regex);
+                                const regex =
+                                        /(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
+                                const match = scriptContent.match(regex);
 
-				if (match) {
-					// Extraer el contenido de linksData como una cadena JSON
-					const linksDataString = match[1];
+                                if (match) {
+                                        const linksDataString = match[1];
 
                                         try {
-                                                // Interpretar la cadena como un literal de objeto de JavaScript.
                                                 const linksData = vm.runInNewContext(
                                                         `(${linksDataString})`,
                                                         {}
                                                 );
-						console.log(
-							"Datos originales encontrados:",
-							linksData.links.length,
-							"enlaces"
-						);
+                                                console.log(
+                                                        "Datos originales encontrados:",
+                                                        linksData.links.length,
+                                                        "enlaces"
+                                                );
 
-						// Limpiar los datos eliminando enlaces vacíos o con solo el prefijo
-						const cleanedLinks = linksData.links.filter((link) => {
-							const urlWithoutPrefix = link.url.replace(
-								"acestream://",
-								""
-							);
-							return urlWithoutPrefix.length > 0;
-						});
+                                                const cleanedLinks = linksData.links.filter((link) => {
+                                                        const urlWithoutPrefix = link.url.replace(
+                                                                "acestream://",
+                                                                ""
+                                                        );
+                                                        return urlWithoutPrefix.length > 0;
+                                                });
 
-						// Crear el contenido del archivo M3U
-						let m3uContent = "#EXTM3U\n"; // Encabezado del archivo M3U
+                                                let m3uContent = "#EXTM3U\n";
 
-						// Añadir cada entrada al contenido M3U
-						cleanedLinks.forEach((link) => {
-							// Crear la línea de información extendida
-							m3uContent += `#EXTINF:-1 group-title="${link.name}" tvg-id="${link.name}",${link.name}\n`;
-							// Añadir la URL
-							m3uContent += `${link.url}\n`;
-						});
+                                                cleanedLinks.forEach((link) => {
+                                                        m3uContent += `#EXTINF:-1 group-title="${link.name}" tvg-id="${link.name}",${link.name}\n`;
+                                                        m3uContent += `${link.url}\n`;
+                                                });
 
-						// Guardar el archivo M3U
-						fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
-						console.log(
-							"Archivo M3U generado con éxito como 'playlist.m3u'"
-						);
+                                                fs.writeFileSync("playlist.m3u", m3uContent, "utf8");
+                                                console.log(
+                                                        "Archivo M3U generado con éxito como 'playlist.m3u'"
+                                                );
 
-						// Mostrar estadísticas
-						console.log("\nEstadísticas de exportación:");
-						console.log(
-							`- Total de enlaces exportados: ${cleanedLinks.length}`
-						);
-						console.log("- Estructura del archivo M3U generado:");
-						console.log("  - Encabezado: #EXTM3U");
-						console.log("  - Por cada canal:");
-						console.log(
-							"    - Línea de información con group-title, tvg-id y nombre"
-						);
-						console.log("    - URL del stream");
+                                                console.log("\nEstadísticas de exportación:");
+                                                console.log(
+                                                        `- Total de enlaces exportados: ${cleanedLinks.length}`
+                                                );
+                                                console.log("- Estructura del archivo M3U generado:");
+                                                console.log("  - Encabezado: #EXTM3U");
+                                                console.log("  - Por cada canal:");
+                                                console.log(
+                                                        "    - Línea de información con group-title, tvg-id y nombre"
+                                                );
+                                                console.log("    - URL del stream");
 
-						found = true;
+                                                found = true;
                                         } catch (parseError) {
                                                 console.error(
                                                         "Error al interpretar la estructura linksData:",
                                                         parseError
                                                 );
                                         }
-				}
-			}
-		});
+                                }
+                        }
+                });
 
-		if (!found) {
-			console.log(
-				"No se encontró la variable 'linksData' en los scripts."
-			);
-		}
-	} catch (error) {
-		console.error("Error al obtener la página:", error.message);
-		if (error.response) {
-			console.error("Detalles de la respuesta:", {
-				status: error.response.status,
-				headers: error.response.headers,
-				data: error.response.data,
-			});
-		}
-	}
+                if (!found) {
+                        console.log(
+                                "No se encontró la variable 'linksData' en los scripts."
+                        );
+                }
+        } catch (error) {
+                console.error("Error al obtener la página:", error.message);
+                if (error.response) {
+                        console.error("Detalles de la respuesta:", {
+                                status: error.response.status,
+                                headers: error.response.headers,
+                                data: error.response.data,
+                        });
+                }
+        }
 }
 
 const options = parseCliArgs();

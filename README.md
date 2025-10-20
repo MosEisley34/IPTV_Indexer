@@ -48,6 +48,27 @@ View all available options with:
 node main.js --help
 ```
 
+### Session-based authentication
+
+If the target site requires authentication, provide login information or raw cookies/headers via CLI flags or environment variables. The script will first call the login endpoint, store the returned cookies, and reuse the authenticated session for the scraping request.
+
+Supported options:
+
+- `--login-url` / `LOGIN_URL`: Authentication endpoint that must be called before scraping.
+- `--login-username` / `LOGIN_USERNAME` and `--login-password` / `LOGIN_PASSWORD`: Credentials sent as JSON (`{ "username": "...", "password": "..." }`).
+- `--login-payload` / `LOGIN_PAYLOAD`: Raw JSON body to post to the login endpoint. When provided it overrides the username/password payload so you can match the structure expected by the API (for example, `{ "email": "...", "pass": "..." }`).
+- `--cookies` / `SCRAPER_COOKIES`: Raw cookie string to send with every request (e.g., `session=abc; token=123`). The values are also loaded into the cookie jar.
+- `--headers` / `SCRAPER_HEADERS`: Additional headers separated by semicolons or line breaks (e.g., `Authorization: Bearer <token>;X-Custom: value`).
+
+Example:
+
+```bash
+LOGIN_URL="https://example.com/api/login" \
+LOGIN_PAYLOAD='{"email":"usuario@example.com","pass":"secreto"}' \
+SCRAPER_HEADERS="X-Requested-With: XMLHttpRequest" \
+node main.js --url="https://example.com/iptv-page"
+```
+
 ### Using NordVPN
 
 You can route requests through a NordVPN proxy. Enable the option with the `--use-nordvpn` flag or the `USE_NORDVPN=true` environment variable and provide the proxy information supplied by NordVPN:
