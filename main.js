@@ -145,6 +145,32 @@ function findNextRelevantLine(lines, startIndex) {
         return null;
 }
 
+function looksLikeKeyValuePair(text) {
+        if (typeof text !== "string") {
+                return false;
+        }
+
+        const colonIndex = text.indexOf(":");
+
+        if (colonIndex === -1) {
+                return false;
+        }
+
+        const keyPart = text.slice(0, colonIndex).trim();
+
+        if (!keyPart) {
+                return false;
+        }
+
+        const nextChar = text[colonIndex + 1];
+
+        if (nextChar === undefined) {
+                return true;
+        }
+
+        return [" ", "\t", "'", '"'].includes(nextChar);
+}
+
 function parseSimpleYaml(content) {
         const lines = content.split(/\r?\n/);
         const root = {};
@@ -190,7 +216,7 @@ function parseSimpleYaml(content) {
                                 continue;
                         }
 
-                        if (!valuePart.includes(":") || valuePart.startsWith('"') || valuePart.startsWith("'")) {
+                        if (!looksLikeKeyValuePair(valuePart)) {
                                 parent.push(parseYamlScalar(valuePart));
                                 continue;
                         }
@@ -219,7 +245,7 @@ function parseSimpleYaml(content) {
 
                 const colonIndex = trimmed.indexOf(":");
 
-                if (colonIndex === -1) {
+                if (colonIndex === -1 || !looksLikeKeyValuePair(trimmed)) {
                         continue;
                 }
 
@@ -452,7 +478,7 @@ function askQuestion(question, { defaultValue = "", hidden = false, trim = true,
                                 const output = chunk.toString();
 
                                 if (!this.muted) {
-                                        process.stdout.write(output, encoding);
+                                        process.stdout.write(output);
                                 } else if (output === "\n" || output === "\r" || output === "\r\n") {
                                         process.stdout.write("\n");
                                 } else if (output === "\u0008" || output === "\u007f") {
