@@ -2,17 +2,132 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const fs = require("fs");
 const vm = require("vm");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
-async function extractAndExport() {
-	try {
-		const url = "";
-		// Realizar una solicitud a la página
-		const response = await axios.get(url, {
-			headers: {
-				"User-Agent":
-					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-			},
-		});
+function parseCliArgs() {
+        const args = process.argv.slice(2);
+        const config = {
+                url: process.env.SCRAPER_URL || "",
+                useNordVPN:
+                        process.env.USE_NORDVPN === "true" ||
+                        process.env.USE_NORDVPN === "1",
+                nordVpnProxyUrl: process.env.NORDVPN_PROXY_URL || "",
+        };
+
+        const nordVpnHost = process.env.NORDVPN_PROXY_HOST;
+        const nordVpnPort = process.env.NORDVPN_PROXY_PORT;
+        const nordVpnUser = process.env.NORDVPN_USERNAME;
+        const nordVpnPass = process.env.NORDVPN_PASSWORD;
+
+        if (!config.nordVpnProxyUrl && nordVpnHost && nordVpnPort) {
+                const credentials =
+                        nordVpnUser && nordVpnPass
+                                ? `${encodeURIComponent(nordVpnUser)}:${encodeURIComponent(
+                                          nordVpnPass
+                                  )}@`
+                                : "";
+                config.nordVpnProxyUrl = `http://${credentials}${nordVpnHost}:${nordVpnPort}`;
+        }
+
+        for (const arg of args) {
+                if (arg === "--help") {
+                        return { help: true };
+                }
+
+                if (arg.startsWith("--url=")) {
+                        config.url = arg.slice("--url=".length);
+                        continue;
+                }
+
+                if (arg === "--use-nordvpn") {
+                        config.useNordVPN = true;
+                        continue;
+                }
+
+                if (arg.startsWith("--nordvpn-proxy=")) {
+                        config.nordVpnProxyUrl = arg.slice("--nordvpn-proxy=".length);
+                        continue;
+                }
+        }
+
+        return config;
+}
+
+function logHelp() {
+        console.log(`Uso: node main.js --url=<URL> [opciones]\n\n` +
+                `Opciones:\n` +
+                `  --url=<URL>             URL que se desea analizar (también SCRAPER_URL).\n` +
+                `  --use-nordvpn           Fuerza el uso del proxy de NordVPN.\n` +
+                `  --nordvpn-proxy=<URL>   URL completa del proxy (p. ej. http://usuario:pass@host:puerto).\n` +
+                `  --help                  Muestra esta ayuda.\n\n` +
+                `Variables de entorno:\n` +
+                `  USE_NORDVPN=true        Activa el uso de NordVPN.\n` +
+                `  NORDVPN_PROXY_URL       Proxy HTTP(S) proporcionado por NordVPN.\n` +
+                `  NORDVPN_PROXY_HOST      Host del proxy de NordVPN.\n` +
+                `  NORDVPN_PROXY_PORT      Puerto del proxy de NordVPN.\n` +
+                `  NORDVPN_USERNAME        Usuario del proxy (si aplica).\n` +
+                `  NORDVPN_PASSWORD        Contraseña del proxy (si aplica).`);
+}
+
+function maskProxyUrl(proxyUrl) {
+        try {
+                const url = new URL(proxyUrl);
+                if (url.username || url.password) {
+                        url.password = url.password ? "***" : "";
+                        url.username = url.username ? "***" : "";
+                }
+                return url.toString();
+        } catch (error) {
+                return proxyUrl;
+        }
+}
+
+async function extractAndExport(options) {
+        if (options.help) {
+                logHelp();
+                return;
+        }
+
+        const { url, useNordVPN, nordVpnProxyUrl } = options;
+
+        if (!url) {
+                console.error(
+                        "Debes proporcionar una URL con --url o la variable de entorno SCRAPER_URL."
+                );
+                process.exitCode = 1;
+                return;
+        }
+
+        const requestConfig = {
+                headers: {
+                        "User-Agent":
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                },
+        };
+
+        if (useNordVPN) {
+                if (!nordVpnProxyUrl) {
+                        console.error(
+                                "El uso de NordVPN está habilitado, pero no se proporcionó un proxy válido."
+                        );
+                        console.error(
+                                "Configura NORDVPN_PROXY_URL o usa --nordvpn-proxy=http://usuario:pass@host:puerto"
+                        );
+                        process.exitCode = 1;
+                        return;
+                }
+
+                console.log("Usando NordVPN mediante el proxy:", maskProxyUrl(nordVpnProxyUrl));
+
+                const proxyAgent = new HttpsProxyAgent(nordVpnProxyUrl);
+                requestConfig.httpAgent = proxyAgent;
+                requestConfig.httpsAgent = proxyAgent;
+                requestConfig.proxy = false;
+        }
+
+        try {
+                // Realizar una solicitud a la página
+                const response = await axios.get(url, requestConfig);
 
 		// Verificar que la respuesta se obtuvo correctamente
 		if (response.status === 200) {
@@ -122,4 +237,5 @@ async function extractAndExport() {
 	}
 }
 
-extractAndExport();
+const options = parseCliArgs();
+extractAndExport(options);

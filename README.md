@@ -12,60 +12,94 @@ This Node.js project uses **Axios** and **Cheerio** to scrape IPTV channel links
 ## Requirements
 
 - Node.js (v14.x or higher)
-- NPM (Node Package Manager)
+- npm (Node Package Manager)
 
 ## Installation
 
 1. Clone the repository or download the source code.
+2. Install dependencies.
 
-   ```bash
-   git clone <repository_url>
-   cd <project_directory>
-
-    Install the required dependencies:
-
+```bash
+git clone <repository_url>
+cd <project_directory>
 npm install
+```
 
-Make sure you have the necessary tools (Axios, Cheerio) installed in your project:
+## Usage
 
-    npm install axios cheerio
+Provide the target URL through the CLI or the `SCRAPER_URL` environment variable:
 
-Usage
+```bash
+node main.js --url="https://example.com/iptv-page"
+# o bien
+SCRAPER_URL="https://example.com/iptv-page" node main.js
+```
 
-    Update the url variable in the script with the webpage URL containing the IPTV links.
+The script will:
 
-    Run the script:
+- Make an HTTP request to the specified webpage.
+- Parse the page and extract IPTV channel data.
+- Clean invalid URLs (for example, removing the `acestream://` prefix).
+- Create an M3U file named `playlist.m3u` in the project directory.
 
-    node main.js
+View all available options with:
 
-    The script will:
-        Make an HTTP request to the specified webpage.
-        Parse the page and extract IPTV channel data.
-        Clean up invalid URLs (e.g., removing "acestream://" prefix).
-        Create an M3U file named playlist.m3u in the project directory.
+```bash
+node main.js --help
+```
 
-    The M3U playlist will be saved and ready to use for streaming.
+### Using NordVPN
 
-Example Output
+You can route requests through a NordVPN proxy. Enable the option with the `--use-nordvpn` flag or the `USE_NORDVPN=true` environment variable and provide the proxy information supplied by NordVPN:
 
-The generated M3U playlist will be structured as follows:
+```bash
+USE_NORDVPN=true \
+NORDVPN_PROXY_URL="http://usuario:password@proxy.nordvpn.com:89" \
+node main.js --url="https://example.com/iptv-page"
+```
 
+Alternatively, specify the proxy components individually:
+
+```bash
+USE_NORDVPN=true \
+NORDVPN_PROXY_HOST="proxy.nordvpn.com" \
+NORDVPN_PROXY_PORT="89" \
+NORDVPN_USERNAME="usuario" \
+NORDVPN_PASSWORD="password" \
+node main.js --url="https://example.com/iptv-page"
+```
+
+If you prefer not to use environment variables, provide everything via CLI arguments:
+
+```bash
+node main.js \
+  --url="https://example.com/iptv-page" \
+  --use-nordvpn \
+  --nordvpn-proxy="http://usuario:password@proxy.nordvpn.com:89"
+```
+
+> **Note:** The script uses the `https-proxy-agent` module to route HTTP and HTTPS requests. Make sure the NordVPN proxy you configure supports the required protocol.
+
+## Example Output
+
+The generated M3U playlist is structured as follows:
+
+```
 #EXTM3U
 #EXTINF:-1 group-title="News" tvg-id="CNN", CNN News
 http://example.com/stream/cnn
 #EXTINF:-1 group-title="Sports" tvg-id="ESPN", ESPN
 http://example.com/stream/espn
+```
 
-Error Handling
+## Error Handling
 
-If an error occurs during the scraping process (e.g., invalid URL, network issues), an error message will be displayed in the console.
-Contributing
+If an error occurs during the scraping process (e.g., invalid URL or network issues), the script prints an informative message in the console.
+
+## Contributing
 
 Feel free to fork this project and submit pull requests for improvements, bug fixes, or new features.
-License
+
+## License
 
 This project is open-source and available under the MIT License.
-
-
-This `README.md` provides a clear overview of your project, setup instructions, and usage details for potential users or contributors.
-
