@@ -1,7 +1,17 @@
 # Configuración de ejemplo para IPTV_Indexer
 scraper:
   urls:
-    - https://example.com/iptv-list
+    - https://securestreaming.example.com/iptv-list
+    - https://iptv-demo.example.net/channels
+  credentials:
+    - site: securestreaming.example.com
+      loginUrl: https://securestreaming.example.com/api/login
+      username: demoUser
+      password: demoPass123
+    - site: iptv-demo.example.net
+      loginUrl: https://iptv-demo.example.net/api/auth
+      username: sampleUser
+      password: samplePass456
 
 nordvpn:
   useProxy: true
