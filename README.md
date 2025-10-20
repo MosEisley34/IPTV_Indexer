@@ -36,7 +36,7 @@ Usage
 
     Run the script:
 
-    node index.js
+    node main.js
 
     The script will:
         Make an HTTP request to the specified webpage.
