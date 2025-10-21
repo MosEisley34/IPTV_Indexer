@@ -134,6 +134,405 @@ function stripYamlComment(line) {
         return result;
 }
 
+function isNonEmptyString(value) {
+        return typeof value === "string" && value.trim().length > 0;
+}
+
+function findHeaderKey(headers, name) {
+        if (!headers || typeof headers !== "object") {
+                return null;
+        }
+
+        const target = name.toLowerCase();
+
+        for (const key of Object.keys(headers)) {
+                if (key.toLowerCase() === target) {
+                        return key;
+                }
+        }
+
+        return null;
+}
+
+function setOrReplaceHeader(headers, name, value) {
+        const existingKey = findHeaderKey(headers, name);
+
+        if (existingKey) {
+                headers[existingKey] = value;
+        } else {
+                headers[name] = value;
+        }
+}
+
+function hasHeader(headers, name) {
+        return Boolean(findHeaderKey(headers, name));
+}
+
+function mergeHeaders(...sources) {
+        const result = {};
+
+        for (const source of sources) {
+                if (!source || typeof source !== "object") {
+                        continue;
+                }
+
+                for (const [key, value] of Object.entries(source)) {
+                        if (value === undefined || value === null) {
+                                const existingKey = findHeaderKey(result, key);
+
+                                if (existingKey) {
+                                        delete result[existingKey];
+                                }
+
+                                continue;
+                        }
+
+                        setOrReplaceHeader(result, key, value);
+                }
+        }
+
+        return result;
+}
+
+function parseCookiesInput(raw) {
+        const cookies = [];
+        const errors = [];
+
+        if (!raw || typeof raw !== "string") {
+                return { cookies, errors };
+        }
+
+        const parts = raw.split(/[;\n]/);
+
+        for (const part of parts) {
+                const trimmed = part.trim();
+
+                if (!trimmed) {
+                        continue;
+                }
+
+                const separatorIndex = trimmed.indexOf("=");
+
+                if (separatorIndex === -1) {
+                        errors.push(`Ignoring cookie entry without '=': ${trimmed}`);
+                        continue;
+                }
+
+                const name = trimmed.slice(0, separatorIndex).trim();
+                const value = trimmed.slice(separatorIndex + 1).trim();
+
+                if (!name) {
+                        errors.push("Ignoring cookie entry with empty name.");
+                        continue;
+                }
+
+                cookies.push({ name, value });
+        }
+
+        return { cookies, errors };
+}
+
+function parseHeaderList(raw) {
+        const headers = {};
+        const cookies = [];
+        const errors = [];
+
+        if (!raw || typeof raw !== "string") {
+                return { headers, cookies, errors };
+        }
+
+        const lines = raw.split(/[\n;]/);
+
+        for (const line of lines) {
+                const trimmed = line.trim();
+
+                if (!trimmed) {
+                        continue;
+                }
+
+                const separatorIndex = trimmed.indexOf(":");
+
+                if (separatorIndex === -1) {
+                        errors.push(`Ignoring header without ':' separator: ${trimmed}`);
+                        continue;
+                }
+
+                const name = trimmed.slice(0, separatorIndex).trim();
+                const value = trimmed.slice(separatorIndex + 1).trim();
+
+                if (!name) {
+                        errors.push("Ignoring header entry with empty name.");
+                        continue;
+                }
+
+                if (name.toLowerCase() === "cookie") {
+                        const parsed = parseCookiesInput(value);
+                        cookies.push(...parsed.cookies);
+                        errors.push(...parsed.errors);
+                        continue;
+                }
+
+                setOrReplaceHeader(headers, name, value);
+        }
+
+        return { headers, cookies, errors };
+}
+
+function createCookieJar(initialCookies = []) {
+        const jar = new Map();
+
+        const api = {
+                set(name, value) {
+                        if (!name) {
+                                return;
+                        }
+                        jar.set(name, value ?? "");
+                },
+                loadFromCookieHeader(value) {
+                        const parsed = parseCookiesInput(value);
+                        parsed.cookies.forEach(({ name, value: cookieValue }) => {
+                                api.set(name, cookieValue);
+                        });
+                        return parsed.errors;
+                },
+                loadFromSetCookie(setCookieValue) {
+                        if (typeof setCookieValue !== "string" || setCookieValue.length === 0) {
+                                return;
+                        }
+
+                        const [firstPart] = setCookieValue.split(";");
+
+                        if (!firstPart) {
+                                return;
+                        }
+
+                        const separatorIndex = firstPart.indexOf("=");
+
+                        if (separatorIndex === -1) {
+                                return;
+                        }
+
+                        const name = firstPart.slice(0, separatorIndex).trim();
+                        const value = firstPart.slice(separatorIndex + 1).trim();
+
+                        if (!name) {
+                                return;
+                        }
+
+                        api.set(name, value);
+                },
+                getCookieHeader() {
+                        if (jar.size === 0) {
+                                return "";
+                        }
+
+                        return Array.from(jar.entries())
+                                .map(([name, value]) => `${name}=${value}`)
+                                .join("; ");
+                },
+                hasCookies() {
+                        return jar.size > 0;
+                },
+        };
+
+        if (Array.isArray(initialCookies)) {
+                initialCookies.forEach((cookie) => {
+                        if (cookie && typeof cookie.name === "string") {
+                                api.set(cookie.name.trim(), cookie.value ?? "");
+                        }
+                });
+        }
+
+        return api;
+}
+
+function getHeaderValues(headers, name) {
+        if (!headers || typeof headers !== "object") {
+                        return [];
+        }
+
+        const target = name.toLowerCase();
+        const direct = headers[target];
+        const fallback = headers[name];
+        const value = direct ?? fallback;
+
+        if (!value) {
+                const matchingKey = findHeaderKey(headers, name);
+
+                if (!matchingKey) {
+                        return [];
+                }
+
+                const resolved = headers[matchingKey];
+
+                if (!resolved) {
+                        return [];
+                }
+
+                if (Array.isArray(resolved)) {
+                        return resolved;
+                }
+
+                return [resolved];
+        }
+
+        if (Array.isArray(value)) {
+                return value;
+        }
+
+        return [value];
+}
+
+function updateCookieJarFromResponse(cookieJar, headers) {
+        if (!cookieJar) {
+                return;
+        }
+
+        const setCookies = getHeaderValues(headers, "set-cookie");
+
+        for (const entry of setCookies) {
+                cookieJar.loadFromSetCookie(entry);
+        }
+}
+
+function resolveMaybeRelativeUrl(candidate, baseUrl) {
+        if (!candidate || typeof candidate !== "string") {
+                return "";
+        }
+
+        try {
+                const resolved = new URL(candidate, baseUrl instanceof URL ? baseUrl : new URL(baseUrl));
+                return resolved.href;
+        } catch (error) {
+                try {
+                        return new URL(candidate).href;
+                } catch (innerError) {
+                        return candidate;
+                }
+        }
+}
+
+function findCredentialForHost(credentials, hostname) {
+        if (!Array.isArray(credentials) || !hostname) {
+                return null;
+        }
+
+        const lowerHost = hostname.toLowerCase();
+
+        for (const entry of credentials) {
+                if (!entry || typeof entry.site !== "string") {
+                        continue;
+                }
+
+                const normalizedSite = entry.site.trim().toLowerCase();
+
+                if (!normalizedSite) {
+                        continue;
+                }
+
+                if (lowerHost === normalizedSite || lowerHost.endsWith(`.${normalizedSite}`)) {
+                        return entry;
+                }
+        }
+
+        return null;
+}
+
+function pickFirstNonEmpty(values = []) {
+        for (const value of values) {
+                if (typeof value === "string") {
+                        if (value.trim().length > 0) {
+                                return value;
+                        }
+                }
+        }
+
+        return null;
+}
+
+function buildLoginInfo({ urlObject, options, credential }) {
+        if (!urlObject || !options) {
+                return null;
+        }
+
+        const directLoginUrl = isNonEmptyString(options.loginUrl)
+                ? options.loginUrl
+                : '';
+        const credentialLoginUrl = credential && isNonEmptyString(credential.loginUrl)
+                ? credential.loginUrl
+                : '';
+        const loginUrlCandidate = directLoginUrl || credentialLoginUrl;
+
+        if (!loginUrlCandidate) {
+                return null;
+        }
+
+        const resolvedLoginUrl = resolveMaybeRelativeUrl(loginUrlCandidate, urlObject);
+
+        let payload = null;
+        let payloadSource = '';
+
+        if (options.loginPayload && typeof options.loginPayload === "object") {
+                payload = options.loginPayload;
+                payloadSource = "global";
+        } else if (credential && credential.payload && typeof credential.payload === "object") {
+                payload = credential.payload;
+                payloadSource = "credential";
+        } else {
+                const usernameCandidate = pickFirstNonEmpty([
+                        options.loginUsername,
+                        credential ? credential.username : null,
+                ]);
+
+                let passwordCandidate = null;
+
+                if (typeof options.loginPassword === "string" && options.loginPassword.length > 0) {
+                        passwordCandidate = options.loginPassword;
+                } else if (
+                        credential &&
+                        typeof credential.password === "string" &&
+                        credential.password.length > 0
+                ) {
+                        passwordCandidate = credential.password;
+                }
+
+                if (usernameCandidate !== null || passwordCandidate !== null) {
+                        payload = {
+                                username: usernameCandidate !== null ? usernameCandidate.trim() : "",
+                                password: passwordCandidate !== null ? passwordCandidate : "",
+                        };
+                        payloadSource = "credentials";
+                }
+        }
+
+        return {
+                url: resolvedLoginUrl,
+                method: "POST",
+                payload,
+                payloadSource,
+        };
+}
+
+function buildHeadersForRequest(baseHeaders = {}, cookieJar, extraHeaders = {}) {
+        const combined = mergeHeaders(baseHeaders, extraHeaders);
+
+        if (cookieJar && typeof cookieJar.getCookieHeader === "function") {
+                const cookieHeader = cookieJar.getCookieHeader();
+
+                if (cookieHeader) {
+                        setOrReplaceHeader(combined, "Cookie", cookieHeader);
+                } else {
+                        const existingCookieKey = findHeaderKey(combined, "Cookie");
+
+                        if (existingCookieKey) {
+                                delete combined[existingCookieKey];
+                        }
+                }
+        }
+
+        return combined;
+}
+
 async function main() {
         const options = parseCliArgs();
 
@@ -1202,6 +1601,26 @@ function parseCliArgs() {
                         process.env.NORDVPN_CLI_TIMEOUT_MS
                                 ? Number(process.env.NORDVPN_CLI_TIMEOUT_MS)
                                 : undefined,
+                loginUrl: process.env.LOGIN_URL || '',
+                loginUsername: process.env.LOGIN_USERNAME || '',
+                loginPassword: process.env.LOGIN_PASSWORD || '',
+                rawLoginPayload: process.env.LOGIN_PAYLOAD || '',
+                rawCookies:
+                        process.env.SCRAPER_COOKIES ||
+                        process.env.COOKIES ||
+                        '',
+                rawHeaders:
+                        process.env.SCRAPER_HEADERS ||
+                        process.env.HEADERS ||
+                        '',
+                savedCredentials: [],
+                credentialParseErrors: [],
+                loginPayload: null,
+                loginPayloadError: '',
+                additionalHeaders: {},
+                headersParseErrors: [],
+                initialCookies: [],
+                cookieParseErrors: [],
         };
 
         config.configFilePath = loadedConfig.path;
@@ -1226,6 +1645,87 @@ function parseCliArgs() {
                                 config.urls = scraperConfig.urls
                                         .map((item) => (typeof item === 'string' ? item.trim() : ''))
                                         .filter((item) => item.length > 0);
+                        }
+
+                        if (!config.loginUrl && typeof scraperConfig.loginUrl === 'string') {
+                                config.loginUrl = scraperConfig.loginUrl;
+                        }
+
+                        if (!config.loginUsername && typeof scraperConfig.loginUsername === 'string') {
+                                config.loginUsername = scraperConfig.loginUsername;
+                        }
+
+                        if (!config.loginPassword && typeof scraperConfig.loginPassword === 'string') {
+                                config.loginPassword = scraperConfig.loginPassword;
+                        }
+
+                        if (!config.rawLoginPayload && typeof scraperConfig.loginPayload === 'string') {
+                                config.rawLoginPayload = scraperConfig.loginPayload;
+                        }
+
+                        if (!config.rawCookies && typeof scraperConfig.cookies === 'string') {
+                                config.rawCookies = scraperConfig.cookies;
+                        }
+
+                        if (!config.rawHeaders && typeof scraperConfig.headers === 'string') {
+                                config.rawHeaders = scraperConfig.headers;
+                        }
+
+                        if (Array.isArray(scraperConfig.credentials)) {
+                                const sanitizedCredentials = [];
+
+                                for (const rawEntry of scraperConfig.credentials) {
+                                        if (!rawEntry || typeof rawEntry !== 'object') {
+                                                continue;
+                                        }
+
+                                        const entry = {};
+
+                                        if (typeof rawEntry.site === 'string') {
+                                                entry.site = rawEntry.site.trim();
+                                        }
+
+                                        if (typeof rawEntry.loginUrl === 'string') {
+                                                entry.loginUrl = rawEntry.loginUrl.trim();
+                                        }
+
+                                        if (typeof rawEntry.username === 'string') {
+                                                const normalizedUsername = rawEntry.username.trim();
+                                                if (normalizedUsername) {
+                                                        entry.username = normalizedUsername;
+                                                }
+                                        }
+
+                                        if (typeof rawEntry.password === 'string') {
+                                                entry.password = rawEntry.password;
+                                        }
+
+                                        if (typeof rawEntry.cookies === 'string') {
+                                                entry.cookies = rawEntry.cookies;
+                                        }
+
+                                        if (rawEntry.payload !== undefined) {
+                                                if (typeof rawEntry.payload === 'string') {
+                                                        try {
+                                                                entry.payload = JSON.parse(rawEntry.payload);
+                                                        } catch (error) {
+                                                                config.credentialParseErrors.push(
+                                                                        `Invalid JSON payload for credentials entry '${
+                                                                                entry.site || entry.loginUrl || 'unknown'
+                                                                        }': ${error.message}`
+                                                                );
+                                                        }
+                                                } else if (isPlainObject(rawEntry.payload)) {
+                                                        entry.payload = rawEntry.payload;
+                                                }
+                                        }
+
+                                        if (Object.keys(entry).length > 0) {
+                                                sanitizedCredentials.push(entry);
+                                        }
+                                }
+
+                                config.savedCredentials = sanitizedCredentials;
                         }
 
                         if (!config.outputFormat && typeof scraperConfig.outputFormat === 'string') {
@@ -1399,6 +1899,36 @@ function parseCliArgs() {
                         continue;
                 }
 
+                if (arg.startsWith('--login-url=')) {
+                        config.loginUrl = arg.slice('--login-url='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--login-username=')) {
+                        config.loginUsername = arg.slice('--login-username='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--login-password=')) {
+                        config.loginPassword = arg.slice('--login-password='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--login-payload=')) {
+                        config.rawLoginPayload = arg.slice('--login-payload='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--cookies=')) {
+                        config.rawCookies = arg.slice('--cookies='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--headers=')) {
+                        config.rawHeaders = arg.slice('--headers='.length);
+                        continue;
+                }
+
                 if (arg === '--setup') {
                         runSetupWizard = true;
                         continue;
@@ -1471,6 +2001,63 @@ function parseCliArgs() {
                 config.outputFile = config.outputFormat === 'json' ? 'playlist.json' : 'playlist.m3u';
         }
 
+        if (typeof config.loginUrl === 'string') {
+                config.loginUrl = config.loginUrl.trim();
+        } else {
+                config.loginUrl = '';
+        }
+
+        if (typeof config.loginUsername === 'string') {
+                config.loginUsername = config.loginUsername.trim();
+        } else {
+                config.loginUsername = '';
+        }
+
+        if (typeof config.loginPassword === 'string') {
+                config.loginPassword = config.loginPassword;
+        } else {
+                config.loginPassword = '';
+        }
+
+        if (typeof config.rawLoginPayload === 'string') {
+                config.rawLoginPayload = config.rawLoginPayload.trim();
+        } else {
+                config.rawLoginPayload = '';
+        }
+
+        if (config.rawLoginPayload) {
+                try {
+                        config.loginPayload = JSON.parse(config.rawLoginPayload);
+                        config.loginPayloadError = '';
+                } catch (error) {
+                        config.loginPayload = null;
+                        config.loginPayloadError = error.message;
+                }
+        } else {
+                config.loginPayload = null;
+                config.loginPayloadError = '';
+        }
+
+        if (typeof config.rawHeaders !== 'string') {
+                config.rawHeaders = '';
+        }
+
+        if (typeof config.rawCookies !== 'string') {
+                config.rawCookies = '';
+        }
+
+        const parsedHeaders = parseHeaderList(config.rawHeaders);
+        config.additionalHeaders = parsedHeaders.headers;
+        config.headersParseErrors = parsedHeaders.errors;
+
+        const parsedCookies = parseCookiesInput(config.rawCookies);
+        config.initialCookies = [...parsedHeaders.cookies, ...parsedCookies.cookies];
+        config.cookieParseErrors = parsedCookies.errors;
+
+        if (!Array.isArray(config.savedCredentials)) {
+                config.savedCredentials = [];
+        }
+
         if (requestedLogLevel) {
                 config.logLevel = requestedLogLevel;
         } else if (verboseFlagCount > 0) {
@@ -1509,6 +2096,12 @@ function logHelp() {
                 `  --use-nordvpn-cli       Start and verify the connection using the NordVPN CLI.\n` +
                 `  --nordvpn-cli=<server>  Connect via CLI to the specified server.\n` +
                 `  --nordvpn-cli-timeout=<ms> Max time for the CLI to connect (default 60000 ms).\n` +
+                `  --login-url=<URL>        Login endpoint to call before scraping.\n` +
+                `  --login-username=<user>  Username for the login payload.\n` +
+                `  --login-password=<pass>  Password for the login payload.\n` +
+                `  --login-payload=<json>   Raw JSON body to send to the login endpoint.\n` +
+                `  --cookies="a=b; c=d"     Semicolon-separated cookies to include with every request.\n` +
+                `  --headers="Key: Value"  Additional headers separated by semicolons or new lines.\n` +
                 `  --test-nordvpn          Run a connectivity test for the configured NordVPN workflow and exit.\n` +
                 `  --setup                 Launch the interactive wizard to generate config.yaml.\n` +
                 `  --help                  Show this help message.\n\n` +
@@ -1518,6 +2111,12 @@ function logHelp() {
                 `  OUTPUT_FORMAT           Force the output format (m3u/json).\n` +
                 `  OUTPUT_FILE             Set the output file.\n` +
                 `  LOG_LEVEL               Set the log verbosity (silent/error/warn/info/verbose/debug).\n` +
+                `  LOGIN_URL               Authentication endpoint to call before scraping.\n` +
+                `  LOGIN_USERNAME          Username for the login payload.\n` +
+                `  LOGIN_PASSWORD          Password for the login payload.\n` +
+                `  LOGIN_PAYLOAD           Raw JSON body to send to the login endpoint.\n` +
+                `  SCRAPER_COOKIES         Semicolon-separated cookies for every request (alias: COOKIES).\n` +
+                `  SCRAPER_HEADERS         Additional headers (alias: HEADERS).\n` +
                 `  USE_NORDVPN=true        Enable the use of NordVPN.\n` +
                 `  NORDVPN_PROXY_URL       HTTP(S) proxy provided by NordVPN.\n` +
                 `  NORDVPN_PROXY_HOST      NordVPN proxy host.\n` +
@@ -1560,6 +2159,11 @@ function summarizeOptionsForLogs(options) {
                 nordVpnProxyUrl,
                 nordVpnCliServer,
                 nordVpnCliTimeoutMs,
+                loginUrl,
+                loginPayload,
+                initialCookies,
+                additionalHeaders,
+                savedCredentials,
         } = options;
 
         return {
@@ -1576,6 +2180,19 @@ function summarizeOptionsForLogs(options) {
                 nordVpnProxyUrl: nordVpnProxyUrl ? maskProxyUrl(nordVpnProxyUrl) : null,
                 nordVpnCliServer: nordVpnCliServer || null,
                 nordVpnCliTimeoutMs: nordVpnCliTimeoutMs || null,
+                loginUrl: loginUrl || null,
+                loginPayloadKeys:
+                        loginPayload && typeof loginPayload === 'object'
+                                ? Object.keys(loginPayload)
+                                : null,
+                initialCookieCount: Array.isArray(initialCookies) ? initialCookies.length : 0,
+                additionalHeaderCount:
+                        additionalHeaders && typeof additionalHeaders === 'object'
+                                ? Object.keys(additionalHeaders).length
+                                : 0,
+                savedCredentialsCount: Array.isArray(savedCredentials)
+                        ? savedCredentials.length
+                        : 0,
         };
 }
 
@@ -1873,22 +2490,22 @@ function parseRawHeaders(headerText) {
         return headers;
 }
 
-function performDirectRequest(urlObject, headers) {
+function performDirectRequest(urlObject, headers, method = "GET", body) {
         return new Promise((resolve, reject) => {
                 const isHttps = urlObject.protocol === "https:";
                 const transport = isHttps ? https : http;
+                const finalHeaders = mergeHeaders(headers, {
+                        Host: urlObject.host,
+                        Connection: "close",
+                });
                 const request = transport.request(
                         {
                                 protocol: urlObject.protocol,
                                 hostname: urlObject.hostname,
                                 port: urlObject.port || (isHttps ? 443 : 80),
                                 path: `${urlObject.pathname || "/"}${urlObject.search || ""}`,
-                                method: "GET",
-                                headers: {
-                                        ...headers,
-                                        Host: urlObject.host,
-                                        Connection: "close",
-                                },
+                                method,
+                                headers: finalHeaders,
                         },
                         (response) => {
                                 collectStream(response)
@@ -1904,7 +2521,11 @@ function performDirectRequest(urlObject, headers) {
                 );
 
                 request.on("error", reject);
-                request.end();
+                if (body && body.length > 0) {
+                        request.end(body);
+                } else {
+                        request.end();
+                }
         });
 }
 
@@ -1919,15 +2540,14 @@ function getProxyAuthorizationHeader(proxyObject) {
         return `Basic ${token}`;
 }
 
-function performHttpRequestThroughProxy(urlObject, proxyObject, headers) {
+function performHttpRequestThroughProxy(urlObject, proxyObject, headers, method = "GET", body) {
         return new Promise((resolve, reject) => {
                 const proxyTransport = proxyObject.protocol === "https:" ? https : http;
                 const authorization = getProxyAuthorizationHeader(proxyObject);
-                const requestHeaders = {
-                        ...headers,
+                const requestHeaders = mergeHeaders(headers, {
                         Host: urlObject.host,
                         Connection: "close",
-                };
+                });
 
                 if (authorization) {
                         requestHeaders["Proxy-Authorization"] = authorization;
@@ -1938,7 +2558,7 @@ function performHttpRequestThroughProxy(urlObject, proxyObject, headers) {
                                 protocol: proxyObject.protocol,
                                 hostname: proxyObject.hostname,
                                 port: proxyObject.port || (proxyObject.protocol === "https:" ? 443 : 80),
-                                method: "GET",
+                                method,
                                 path: urlObject.toString(),
                                 headers: requestHeaders,
                         },
@@ -1956,11 +2576,15 @@ function performHttpRequestThroughProxy(urlObject, proxyObject, headers) {
                 );
 
                 request.on("error", reject);
-                request.end();
+                if (body && body.length > 0) {
+                        request.end(body);
+                } else {
+                        request.end();
+                }
         });
 }
 
-function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
+function performHttpsRequestThroughProxy(urlObject, proxyObject, headers, method = "GET", body) {
         return new Promise((resolve, reject) => {
                 const proxyTransport = proxyObject.protocol === "https:" ? https : http;
                 const authorization = getProxyAuthorizationHeader(proxyObject);
@@ -1998,18 +2622,25 @@ function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
                         tlsSocket.once("error", reject);
 
                         tlsSocket.once("secureConnect", () => {
-                                const requestLines = [
-                                        `GET ${urlObject.pathname || "/"}${urlObject.search || ""} HTTP/1.1`,
-                                        `Host: ${urlObject.host}`,
-                                        "Connection: close",
+                                const finalHeaders = mergeHeaders(headers, {
+                                        Host: urlObject.host,
+                                        Connection: "close",
+                                });
+                                const headerLines = [
+                                        `${method} ${urlObject.pathname || "/"}${urlObject.search || ""} HTTP/1.1`,
                                 ];
 
-                                for (const [key, value] of Object.entries(headers)) {
-                                        requestLines.push(`${key}: ${value}`);
+                                for (const [key, value] of Object.entries(finalHeaders)) {
+                                        headerLines.push(`${key}: ${value}`);
                                 }
 
-                                requestLines.push("", "");
-                                tlsSocket.write(requestLines.join("\r\n"));
+                                headerLines.push("", "");
+                                const headerPayload = headerLines.join("\r\n");
+                                tlsSocket.write(headerPayload);
+
+                                if (body && body.length > 0) {
+                                        tlsSocket.write(body);
+                                }
                         });
 
                         collectStream(tlsSocket)
@@ -2048,11 +2679,26 @@ function performHttpsRequestThroughProxy(urlObject, proxyObject, headers) {
         });
 }
 
-async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
+async function fetchWithOptionalProxy(
+        url,
+        { headers = {}, proxyUrl, method = "GET", body } = {}
+) {
         const urlObject = new URL(url);
-        const requestHeaders = {
-                ...headers,
-        };
+        const requestHeaders = mergeHeaders({}, headers);
+        const normalizedMethod = typeof method === "string" && method ? method.toUpperCase() : "GET";
+        let requestBody;
+
+        if (body !== undefined && body !== null) {
+                if (Buffer.isBuffer(body)) {
+                        requestBody = body;
+                } else if (body instanceof Uint8Array) {
+                        requestBody = Buffer.from(body);
+                } else if (typeof body === "string") {
+                        requestBody = Buffer.from(body, "utf8");
+                } else {
+                        requestBody = Buffer.from(String(body));
+                }
+        }
 
         logVerbose(
                 `Preparing request for ${urlObject.href} via ${proxyUrl ? 'proxy' : 'direct connection'}.`
@@ -2061,23 +2707,39 @@ async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
                 `Request headers for ${urlObject.href}: ${JSON.stringify(requestHeaders, null, 2)}`
         );
 
-        if (!requestHeaders["User-Agent"]) {
-                requestHeaders["User-Agent"] = DEFAULT_USER_AGENT;
+        if (!hasHeader(requestHeaders, "User-Agent")) {
+                setOrReplaceHeader(requestHeaders, "User-Agent", DEFAULT_USER_AGENT);
+        }
+
+        if (requestBody && !hasHeader(requestHeaders, "Content-Length")) {
+                setOrReplaceHeader(requestHeaders, "Content-Length", String(requestBody.length));
         }
 
         if (!proxyUrl) {
                 logVerbose(`Performing direct request to ${urlObject.href}`);
-                return performDirectRequest(urlObject, requestHeaders);
+                return performDirectRequest(urlObject, requestHeaders, normalizedMethod, requestBody);
         }
 
         const proxyObject = new URL(proxyUrl);
         logVerbose(`Performing proxied request to ${urlObject.href} via ${maskProxyUrl(proxyUrl)}`);
 
         if (urlObject.protocol === "http:") {
-                return performHttpRequestThroughProxy(urlObject, proxyObject, requestHeaders);
+                return performHttpRequestThroughProxy(
+                        urlObject,
+                        proxyObject,
+                        requestHeaders,
+                        normalizedMethod,
+                        requestBody
+                );
         }
 
-        return performHttpsRequestThroughProxy(urlObject, proxyObject, requestHeaders);
+        return performHttpsRequestThroughProxy(
+                urlObject,
+                proxyObject,
+                requestHeaders,
+                normalizedMethod,
+                requestBody
+        );
 }
 
 const MAX_EXTERNAL_SCRIPT_FETCHES = 10;
@@ -2797,9 +3459,80 @@ async function extractAndExport(options) {
                 }
         }
 
-        const requestHeaders = {
+        if (options.loginPayloadError) {
+                console.error(`Invalid login payload JSON: ${options.loginPayloadError}`);
+                process.exitCode = 1;
+                return;
+        }
+
+        const headerWarnings = Array.isArray(options.headersParseErrors)
+                ? options.headersParseErrors
+                : [];
+
+        for (const warning of headerWarnings) {
+                if (warning) {
+                        console.warn(`[Headers] ${warning}`);
+                }
+        }
+
+        const cookieWarnings = Array.isArray(options.cookieParseErrors)
+                ? options.cookieParseErrors
+                : [];
+
+        for (const warning of cookieWarnings) {
+                if (warning) {
+                        console.warn(`[Cookies] ${warning}`);
+                }
+        }
+
+        const credentialWarnings = Array.isArray(options.credentialParseErrors)
+                ? options.credentialParseErrors
+                : [];
+
+        for (const warning of credentialWarnings) {
+                if (warning) {
+                        console.warn(`[Credentials] ${warning}`);
+                }
+        }
+
+        const defaultRequestHeaders = {
                 "User-Agent": DEFAULT_USER_AGENT,
                 Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        };
+
+        const baseRequestHeaders = mergeHeaders(defaultRequestHeaders, options.additionalHeaders || {});
+        const initialCookies = Array.isArray(options.initialCookies) ? options.initialCookies : [];
+        const sessionCache = new Map();
+
+        const getSessionForUrl = (urlObject) => {
+                const hostKey = (urlObject.hostname || urlObject.host || urlObject.href || "").toLowerCase();
+
+                if (sessionCache.has(hostKey)) {
+                        return sessionCache.get(hostKey);
+                }
+
+                const credential = findCredentialForHost(
+                        options.savedCredentials,
+                        urlObject.hostname || urlObject.host || ''
+                );
+                const cookieJar = createCookieJar(initialCookies);
+
+                if (credential && typeof credential.cookies === "string") {
+                        cookieJar.loadFromCookieHeader(credential.cookies);
+                }
+
+                const loginInfo = buildLoginInfo({ urlObject, options, credential });
+                const session = {
+                        hostKey,
+                        credential,
+                        loginInfo,
+                        cookieJar,
+                        loginAttempted: false,
+                        loginSuccessful: false,
+                };
+
+                sessionCache.set(hostKey, session);
+                return session;
         };
 
         let proxyUrlToUse = "";
@@ -2836,14 +3569,174 @@ async function extractAndExport(options) {
                 console.log(`\nProcessing: ${targetUrl}`);
 
                 try {
+                        let urlObject;
+                        try {
+                                urlObject = new URL(targetUrl);
+                        } catch (error) {
+                                console.error(`Invalid URL provided: ${targetUrl}. ${error.message}`);
+                                continue;
+                        }
+
+                        const session = getSessionForUrl(urlObject);
+
+                        if (session.credential && session.credential.site) {
+                                logDebug(
+                                        `[Login] Using credential entry '${session.credential.site}' for host ${urlObject.hostname}.`
+                                );
+                        }
+
+                        if (session.loginInfo && !session.loginAttempted) {
+                                session.loginAttempted = true;
+                                const loginInfo = session.loginInfo;
+
+                                if (loginInfo.payloadSource) {
+                                        logDebug(
+                                                `[Login] Using ${loginInfo.payloadSource} payload for ${loginInfo.url}.`
+                                        );
+                                }
+
+                                if (!loginInfo.payload || typeof loginInfo.payload !== "object") {
+                                        console.warn(
+                                                `[Login] Skipping authentication for ${loginInfo.url} because no login payload was provided.`
+                                        );
+                                } else {
+                                        console.log(`[Login] Authenticating via ${loginInfo.url}`);
+                                        const payloadKeys = Object.keys(loginInfo.payload || {});
+                                        if (payloadKeys.length > 0) {
+                                                logDebug(
+                                                        `[Login] Payload keys for ${loginInfo.url}: ${payloadKeys.join(", ")}`
+                                                );
+                                        } else {
+                                                logDebug(`[Login] Payload for ${loginInfo.url} is empty JSON.`);
+                                        }
+                                        const loginBody = JSON.stringify(loginInfo.payload);
+
+                                        const performLoginRequest = async (proxyUrlValue) => {
+                                                const loginHeaders = buildHeadersForRequest(
+                                                        baseRequestHeaders,
+                                                        session.cookieJar,
+                                                        {
+                                                                Accept: "application/json,text/plain,*/*;q=0.8",
+                                                        }
+                                                );
+
+                                                if (!hasHeader(loginHeaders, "Content-Type")) {
+                                                        setOrReplaceHeader(loginHeaders, "Content-Type", "application/json");
+                                                }
+
+                                                return fetchWithOptionalProxy(loginInfo.url, {
+                                                        method: loginInfo.method || "POST",
+                                                        headers: loginHeaders,
+                                                        body: loginBody,
+                                                        proxyUrl: proxyUrlValue,
+                                                });
+                                        };
+
+                                        try {
+                                                const loginResponse = await performLoginRequest(proxyUrlToUse || undefined);
+                                                logDebug(
+                                                        `Login response status for ${loginInfo.url}: ${loginResponse.statusCode}`
+                                                );
+                                                updateCookieJarFromResponse(session.cookieJar, loginResponse.headers);
+
+                                                if (loginResponse.statusCode >= 200 && loginResponse.statusCode < 400) {
+                                                        console.log(
+                                                                `[Login] Authentication successful (status ${loginResponse.statusCode}).`
+                                                        );
+                                                        session.loginSuccessful = true;
+                                                        const cookieHeader = session.cookieJar.getCookieHeader();
+                                                        if (cookieHeader) {
+                                                                logDebug(
+                                                                        `[Login] Stored cookies for ${urlObject.hostname}: ${cookieHeader}`
+                                                                );
+                                                        }
+                                                } else {
+                                                        console.warn(
+                                                                `[Login] Authentication endpoint returned status ${loginResponse.statusCode}.`
+                                                        );
+                                                }
+                                        } catch (error) {
+                                                const friendlyProxyError = proxyUrlToUse
+                                                        ? explainNordVpnProxyFailure(error, proxyUrlToUse)
+                                                        : null;
+
+                                                if (friendlyProxyError && useNordVpnCli) {
+                                                        console.error(
+                                                                `[Login] ${friendlyProxyError} (while requesting ${loginInfo.url})`
+                                                        );
+                                                        logDebug(
+                                                                `[Login] Detailed proxy error: ${error.stack || error.message}`
+                                                        );
+                                                        console.log(
+                                                                "[Login] Retrying authentication without the proxy because the NordVPN CLI tunnel is active."
+                                                        );
+
+                                                        try {
+                                                                const fallbackResponse = await performLoginRequest(undefined);
+                                                                updateCookieJarFromResponse(
+                                                                        session.cookieJar,
+                                                                        fallbackResponse.headers
+                                                                );
+
+                                                                if (!proxyDisabledForSession) {
+                                                                        proxyDisabledForSession = true;
+                                                                        proxyUrlToUse = "";
+                                                                        console.log(
+                                                                                "[NordVPN Proxy] Proxy usage has been disabled for the remaining URLs in this session."
+                                                                        );
+                                                                }
+
+                                                                if (
+                                                                        fallbackResponse.statusCode >= 200 &&
+                                                                        fallbackResponse.statusCode < 400
+                                                                ) {
+                                                                        console.log(
+                                                                                `[Login] Authentication successful after retry (status ${fallbackResponse.statusCode}).`
+                                                                        );
+                                                                        session.loginSuccessful = true;
+                                                                        const cookieHeader = session.cookieJar.getCookieHeader();
+                                                                        if (cookieHeader) {
+                                                                                logDebug(
+                                                                                        `[Login] Stored cookies for ${urlObject.hostname}: ${cookieHeader}`
+                                                                                );
+                                                                        }
+                                                                } else {
+                                                                        console.warn(
+                                                                                `[Login] Authentication endpoint returned status ${fallbackResponse.statusCode} after retry.`
+                                                                        );
+                                                                }
+                                                        } catch (fallbackError) {
+                                                                console.error(
+                                                                        `[Login] Authentication failed after fallback: ${fallbackError.message}`
+                                                                );
+                                                                logDebug(
+                                                                        `[Login] Detailed fallback authentication error: ${
+                                                                                fallbackError.stack || fallbackError.message
+                                                                        }`
+                                                                );
+                                                        }
+                                                } else {
+                                                        console.error(`[Login] Authentication failed: ${error.message}`);
+                                                        logDebug(
+                                                                `[Login] Detailed authentication error: ${
+                                                                        error.stack || error.message
+                                                                }`
+                                                        );
+                                                }
+                                        }
+                                }
+                        }
+
                         logVerbose(`Fetching content from ${targetUrl}`);
 
                         const usingProxyForThisRequest = Boolean(proxyUrlToUse);
                         let response;
 
+                        const pageHeaders = buildHeadersForRequest(baseRequestHeaders, session.cookieJar);
+
                         try {
                                 response = await fetchWithOptionalProxy(targetUrl, {
-                                        headers: requestHeaders,
+                                        headers: pageHeaders,
                                         proxyUrl: proxyUrlToUse || undefined,
                                 });
                         } catch (error) {
@@ -2852,37 +3745,34 @@ async function extractAndExport(options) {
                                         : null;
 
                                 if (friendlyProxyError && useNordVpnCli) {
-                                        console.error(
-                                                `${friendlyProxyError} (while requesting ${targetUrl})`
-                                        );
+                                        console.error(`${friendlyProxyError} (while requesting ${targetUrl})`);
                                         logDebug(
                                                 `Detailed proxy error for ${targetUrl}: ${
                                                         error.stack || error.message
                                                 }`
                                         );
                                         console.log(
-                                                "[NordVPN Proxy] Attempting the request again without the proxy " +
-                                                        "because the NordVPN CLI tunnel is active."
+                                                "[NordVPN Proxy] Attempting the request again without the proxy because the NordVPN CLI tunnel is active."
                                         );
 
                                         try {
+                                                const fallbackHeaders = buildHeadersForRequest(
+                                                        baseRequestHeaders,
+                                                        session.cookieJar
+                                                );
                                                 response = await fetchWithOptionalProxy(targetUrl, {
-                                                        headers: requestHeaders,
+                                                        headers: fallbackHeaders,
                                                 });
 
                                                 if (!proxyDisabledForSession) {
                                                         proxyDisabledForSession = true;
                                                         proxyUrlToUse = "";
                                                         console.log(
-                                                                "[NordVPN Proxy] Proxy usage has been disabled for the " +
-                                                                        "remaining URLs in this session."
+                                                                "[NordVPN Proxy] Proxy usage has been disabled for the remaining URLs in this session."
                                                         );
                                                 }
                                         } catch (fallbackError) {
-                                                console.error(
-                                                        `Error fetching page (${targetUrl}):`,
-                                                        fallbackError.message
-                                                );
+                                                console.error(`Error fetching page (${targetUrl}):`, fallbackError.message);
                                                 logDebug(
                                                         `Detailed error for ${targetUrl} after proxy fallback: ${
                                                                 fallbackError.stack || fallbackError.message
@@ -2892,14 +3782,9 @@ async function extractAndExport(options) {
                                         }
                                 } else {
                                         if (friendlyProxyError) {
-                                                console.error(
-                                                        `${friendlyProxyError} (while requesting ${targetUrl})`
-                                                );
+                                                console.error(`${friendlyProxyError} (while requesting ${targetUrl})`);
                                         } else {
-                                                console.error(
-                                                        `Error fetching page (${targetUrl}):`,
-                                                        error.message
-                                                );
+                                                console.error(`Error fetching page (${targetUrl}):`, error.message);
                                         }
 
                                         logDebug(
@@ -2919,6 +3804,10 @@ async function extractAndExport(options) {
                                 )}`
                         );
 
+                        if (response && response.headers) {
+                                updateCookieJarFromResponse(session.cookieJar, response.headers);
+                        }
+
                         if (response.statusCode === 200) {
                                 console.log("Page loaded successfully.");
                         } else {
@@ -2931,21 +3820,27 @@ async function extractAndExport(options) {
                         const scripts = await extractLinksDataScripts(response.body, {
                                 baseUrl: targetUrl,
                                 fetchExternalScript: async (scriptUrl) => {
-                                        const scriptHeaders = {
-                                                ...requestHeaders,
-                                                Accept:
-                                                        "application/javascript,text/javascript,*/*;q=0.8",
-                                                Referer: targetUrl,
-                                        };
+                                        const scriptHeaders = buildHeadersForRequest(
+                                                baseRequestHeaders,
+                                                session.cookieJar,
+                                                {
+                                                        Accept: "application/javascript,text/javascript,*/*;q=0.8",
+                                                        Referer: targetUrl,
+                                                }
+                                        );
 
-                                        const proxyUrlForScripts = proxyUrlToUse
-                                                ? proxyUrlToUse
-                                                : undefined;
+                                        const proxyUrlForScripts = proxyUrlToUse ? proxyUrlToUse : undefined;
 
-                                        return fetchWithOptionalProxy(scriptUrl, {
+                                        const scriptResponse = await fetchWithOptionalProxy(scriptUrl, {
                                                 headers: scriptHeaders,
                                                 proxyUrl: proxyUrlForScripts,
                                         });
+
+                                        if (scriptResponse && scriptResponse.headers) {
+                                                updateCookieJarFromResponse(session.cookieJar, scriptResponse.headers);
+                                        }
+
+                                        return scriptResponse;
                                 },
                         });
                         logDebug(
@@ -3057,18 +3952,9 @@ async function extractAndExport(options) {
                                 );
                         }
                 } catch (error) {
-                        const friendlyProxyError = proxyUrlToUse
-                                ? explainNordVpnProxyFailure(error, proxyUrlToUse)
-                                : null;
-
-                        if (friendlyProxyError) {
-                                console.error(`${friendlyProxyError} (while requesting ${targetUrl})`);
-                        } else {
-                                console.error(`Error fetching page (${targetUrl}):`, error.message);
-                        }
-
+                        console.error(`Unexpected error while processing ${targetUrl}:`, error.message);
                         logDebug(
-                                `Detailed error for ${targetUrl}: ${error.stack || error.message}`
+                                `Detailed unexpected error for ${targetUrl}: ${error.stack || error.message}`
                         );
                 }
         }
