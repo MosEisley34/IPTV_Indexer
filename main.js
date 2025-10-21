@@ -14,6 +14,84 @@ const DEFAULT_USER_AGENT =
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
 
+const LOG_LEVELS = {
+        silent: 0,
+        error: 1,
+        warn: 2,
+        info: 3,
+        verbose: 4,
+        debug: 5,
+};
+
+const LEVEL_TO_CONSOLE_METHOD = {
+        error: "error",
+        warn: "warn",
+        info: "log",
+        verbose: "log",
+        debug: "log",
+};
+
+let currentLogLevel = LOG_LEVELS.info;
+
+function normalizeLogLevel(level, fallback = "info") {
+        if (typeof level !== "string") {
+                return fallback;
+        }
+
+        const normalized = level.trim().toLowerCase();
+
+        if (normalized === "warning") {
+                return "warn";
+        }
+
+        if (normalized === "errors") {
+                return "error";
+        }
+
+        if (Object.prototype.hasOwnProperty.call(LOG_LEVELS, normalized)) {
+                return normalized;
+        }
+
+        return fallback;
+}
+
+function setLogLevel(levelName) {
+        const normalized = normalizeLogLevel(levelName, "info");
+        currentLogLevel = LOG_LEVELS[normalized] ?? LOG_LEVELS.info;
+}
+
+function logAtLevel(levelName, ...args) {
+        const normalized = normalizeLogLevel(levelName, "info");
+        const levelValue = LOG_LEVELS[normalized];
+
+        if (levelValue > currentLogLevel) {
+                return;
+        }
+
+        const consoleMethod = LEVEL_TO_CONSOLE_METHOD[normalized] || "log";
+        console[consoleMethod](...args);
+}
+
+function logDebug(...args) {
+        logAtLevel("debug", ...args);
+}
+
+function logVerbose(...args) {
+        logAtLevel("verbose", ...args);
+}
+
+function logInfo(...args) {
+        logAtLevel("info", ...args);
+}
+
+function logWarn(...args) {
+        logAtLevel("warn", ...args);
+}
+
+function logError(...args) {
+        logAtLevel("error", ...args);
+}
+
 function stripYamlComment(line) {
         let result = "";
         let inSingle = false;
@@ -57,6 +135,10 @@ function stripYamlComment(line) {
 
 async function main() {
         const options = parseCliArgs();
+
+        setLogLevel(options.logLevel);
+        logDebug(`Log level set to '${options.logLevel}'.`);
+        logVerbose("Runtime options:", summarizeOptionsForLogs(options));
 
         if (options.help) {
                 logHelp();
@@ -285,27 +367,31 @@ function loadConfigFile(configPath) {
         const resolvedPath = resolveConfigPath(configPath);
 
         try {
+                logDebug(`Attempting to load configuration file from ${resolvedPath}`);
+
                 if (!fs.existsSync(resolvedPath)) {
+                        logVerbose(`Configuration file not found at ${resolvedPath}`);
                         return { data: {}, path: resolvedPath, exists: false };
                 }
 
                 const raw = fs.readFileSync(resolvedPath, "utf8");
 
                 if (!raw.trim()) {
+                        logVerbose(`Configuration file at ${resolvedPath} is empty.`);
                         return { data: {}, path: resolvedPath, exists: true };
                 }
 
                 const parsed = parseSimpleYaml(raw);
 
                 if (typeof parsed !== "object" || parsed === null) {
+                        logWarn(`Configuration file at ${resolvedPath} did not produce a valid object.`);
                         return { data: {}, path: resolvedPath, exists: true };
                 }
 
+                logDebug(`Configuration file at ${resolvedPath} loaded successfully.`);
                 return { data: parsed, path: resolvedPath, exists: true };
         } catch (error) {
-                console.warn(
-                        `Failed to load configuration file (${resolvedPath}): ${error.message}`
-                );
+                logWarn(`Failed to load configuration file (${resolvedPath}): ${error.message}`);
                 return { data: {}, path: resolvedPath, exists: false };
         }
 }
@@ -1015,6 +1101,8 @@ function parseCliArgs() {
         let requestedOutputFormat;
         let requestedOutputFile;
         let runSetupWizard = false;
+        let requestedLogLevel;
+        let verboseFlagCount = 0;
 
         for (const arg of args) {
                 if (arg.startsWith('--config=')) {
@@ -1025,6 +1113,12 @@ function parseCliArgs() {
                         requestedOutputFormat = arg.slice('--output-format='.length);
                 } else if (arg.startsWith('--output-file=')) {
                         requestedOutputFile = arg.slice('--output-file='.length);
+                } else if (arg === '--verbose') {
+                        verboseFlagCount += 1;
+                } else if (arg === '--debug') {
+                        requestedLogLevel = 'debug';
+                } else if (arg.startsWith('--log-level=')) {
+                        requestedLogLevel = arg.slice('--log-level='.length);
                 }
         }
 
@@ -1033,11 +1127,13 @@ function parseCliArgs() {
         const fileConfig = isPlainObject(loadedConfig.data) ? loadedConfig.data : {};
         const envOutputFormat = process.env.OUTPUT_FORMAT || process.env.SCRAPER_OUTPUT_FORMAT || '';
         const envOutputFile = process.env.OUTPUT_FILE || process.env.SCRAPER_OUTPUT_FILE || '';
+        const envLogLevel = process.env.LOG_LEVEL || process.env.SCRAPER_LOG_LEVEL || '';
         const config = {
                 url: process.env.SCRAPER_URL || '',
                 urls: [],
                 outputFormat: envOutputFormat,
                 outputFile: envOutputFile,
+                logLevel: envLogLevel,
                 useNordVPN:
                         process.env.USE_NORDVPN === 'true' ||
                         process.env.USE_NORDVPN === '1',
@@ -1091,6 +1187,16 @@ function parseCliArgs() {
 
                                 if (!config.outputFile && typeof scraperConfig.output.file === 'string') {
                                         config.outputFile = scraperConfig.output.file;
+                                }
+                        }
+                }
+
+                if (!config.logLevel) {
+                        const loggingConfig = fileConfig.logging;
+
+                        if (loggingConfig && typeof loggingConfig === 'object') {
+                                if (typeof loggingConfig.level === 'string') {
+                                        config.logLevel = loggingConfig.level;
                                 }
                         }
                 }
@@ -1244,6 +1350,19 @@ function parseCliArgs() {
 
                 if (arg.startsWith('--output-file=')) {
                         requestedOutputFile = arg.slice('--output-file='.length);
+                        continue;
+                }
+
+                if (arg === '--verbose') {
+                        continue;
+                }
+
+                if (arg === '--debug') {
+                        continue;
+                }
+
+                if (arg.startsWith('--log-level=')) {
+                        continue;
                 }
         }
 
@@ -1287,6 +1406,13 @@ function parseCliArgs() {
                 config.outputFile = config.outputFormat === 'json' ? 'playlist.json' : 'playlist.m3u';
         }
 
+        if (requestedLogLevel) {
+                config.logLevel = requestedLogLevel;
+        } else if (verboseFlagCount > 0) {
+                config.logLevel = verboseFlagCount > 1 ? 'debug' : 'verbose';
+        }
+
+        config.logLevel = normalizeLogLevel(config.logLevel || 'info');
         config.runSetupWizard = runSetupWizard;
         config.rawConfig = fileConfig;
 
@@ -1310,6 +1436,9 @@ function logHelp() {
                 `  --config=<path>         Path to the YAML configuration file (default ./config.yaml).\n` +
                 `  --output-format=<fmt>   Output format (m3u or json).\n` +
                 `  --output-file=<path>    Output file for the playlist.\n` +
+                `  --verbose               Increase logging verbosity (repeat for more detail).\n` +
+                `  --debug                 Enable the most detailed logging output.\n` +
+                `  --log-level=<level>     Set log level (silent, error, warn, info, verbose, debug).\n` +
                 `  --use-nordvpn           Force the use of the NordVPN proxy.\n` +
                 `  --nordvpn-proxy=<URL>   Full proxy URL (e.g. http://user:pass@host:port).\n` +
                 `  --use-nordvpn-cli       Start and verify the connection using the NordVPN CLI.\n` +
@@ -1322,6 +1451,7 @@ function logHelp() {
                 `  SCRAPER_CONFIG          Alias for CONFIG_FILE.\n` +
                 `  OUTPUT_FORMAT           Force the output format (m3u/json).\n` +
                 `  OUTPUT_FILE             Set the output file.\n` +
+                `  LOG_LEVEL               Set the log verbosity (silent/error/warn/info/verbose/debug).\n` +
                 `  USE_NORDVPN=true        Enable the use of NordVPN.\n` +
                 `  NORDVPN_PROXY_URL       HTTP(S) proxy provided by NordVPN.\n` +
                 `  NORDVPN_PROXY_HOST      NordVPN proxy host.\n` +
@@ -1348,12 +1478,53 @@ function maskProxyUrl(proxyUrl) {
         }
 }
 
+function summarizeOptionsForLogs(options) {
+        const {
+                configFilePath,
+                loadedConfigPath,
+                url,
+                urls,
+                outputFormat,
+                outputFile,
+                logLevel,
+                useNordVPN,
+                useNordVpnCli,
+                nordVpnProxyUrl,
+                nordVpnCliServer,
+                nordVpnCliTimeoutMs,
+        } = options;
+
+        return {
+                configFilePath,
+                loadedConfigPath,
+                primaryUrl: url || null,
+                urlsCount: Array.isArray(urls) ? urls.length : 0,
+                outputFormat,
+                outputFile,
+                logLevel,
+                useNordVPN: Boolean(useNordVPN),
+                useNordVpnCli: Boolean(useNordVpnCli),
+                nordVpnProxyUrl: nordVpnProxyUrl ? maskProxyUrl(nordVpnProxyUrl) : null,
+                nordVpnCliServer: nordVpnCliServer || null,
+                nordVpnCliTimeoutMs: nordVpnCliTimeoutMs || null,
+        };
+}
+
 function execNordVpn(args, timeoutMs = 15000) {
         return new Promise((resolve, reject) => {
+                logDebug(
+                        `[NordVPN CLI] Executing command: nordvpn ${args.join(' ') || '(no arguments)'}`,
+                        `with timeout ${timeoutMs}ms`
+                );
                 execFile("nordvpn", args, { timeout: timeoutMs }, (error, stdout, stderr) => {
                         if (error) {
                                 const enrichedError = new Error(
                                         `Error running 'nordvpn ${args.join(" ")}'. ${error.message}`
+                                );
+                                const trimmedStdout = (stdout || "").trim();
+                                const trimmedStderr = (stderr || "").trim();
+                                logDebug(
+                                        `[NordVPN CLI] Command failed with stdout='${trimmedStdout}' stderr='${trimmedStderr}'`
                                 );
                                 enrichedError.stdout = stdout;
                                 enrichedError.stderr = stderr;
@@ -1361,6 +1532,12 @@ function execNordVpn(args, timeoutMs = 15000) {
                                 enrichedError.killed = error.killed;
                                 return reject(enrichedError);
                         }
+
+                        const trimmedStdout = (stdout || "").trim();
+                        const trimmedStderr = (stderr || "").trim();
+                        logDebug(
+                                `[NordVPN CLI] Command succeeded with stdout='${trimmedStdout}' stderr='${trimmedStderr}'`
+                        );
                         resolve({ stdout, stderr });
                 });
         });
@@ -1382,6 +1559,9 @@ function isNordVpnConnected(cliOutput, expectedServer) {
 
 async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
         console.log("[NordVPN CLI] Starting connection verification...");
+        logVerbose(
+                `[NordVPN CLI] Desired server: ${server || 'default (automatic)'} | Timeout: ${timeoutMs}ms`
+        );
 
         try {
                 await execNordVpn(["connect", server].filter(Boolean), timeoutMs);
@@ -1402,10 +1582,19 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
                                 console.log("[NordVPN CLI] Connection established successfully.");
                                 return;
                         }
-                        console.log("[NordVPN CLI] Still connecting...", stdout.trim());
+                        const trimmedStatus = (stdout || "").trim();
+                        console.log("[NordVPN CLI] Still connecting...", trimmedStatus);
+                        logDebug(
+                                `[NordVPN CLI] Status poll output (length ${trimmedStatus.length}): ${trimmedStatus}`
+                        );
                 } catch (error) {
                         console.warn(
                                 `[NordVPN CLI] Error checking status (${error.message}). Will keep trying...`
+                        );
+                        logDebug(
+                                `[NordVPN CLI] Status poll failed with code ${error.code ?? 'N/A'} and stderr '${
+                                        (error.stderr || '').trim()
+                                }'`
                         );
                 }
 
@@ -1641,15 +1830,24 @@ async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
                 ...headers,
         };
 
+        logVerbose(
+                `Preparing request for ${urlObject.href} via ${proxyUrl ? 'proxy' : 'direct connection'}.`
+        );
+        logDebug(
+                `Request headers for ${urlObject.href}: ${JSON.stringify(requestHeaders, null, 2)}`
+        );
+
         if (!requestHeaders["User-Agent"]) {
                 requestHeaders["User-Agent"] = DEFAULT_USER_AGENT;
         }
 
         if (!proxyUrl) {
+                logVerbose(`Performing direct request to ${urlObject.href}`);
                 return performDirectRequest(urlObject, requestHeaders);
         }
 
         const proxyObject = new URL(proxyUrl);
+        logVerbose(`Performing proxied request to ${urlObject.href} via ${maskProxyUrl(proxyUrl)}`);
 
         if (urlObject.protocol === "http:") {
                 return performHttpRequestThroughProxy(urlObject, proxyObject, requestHeaders);
@@ -1719,18 +1917,41 @@ async function extractAndExport(options) {
                 `Selected output format: ${normalizedOutputFormat.toUpperCase()} (${normalizedOutputFile})`
         );
 
+        logDebug(
+                "Extractor configuration:",
+                JSON.stringify(
+                        {
+                                normalizedOutputFormat,
+                                normalizedOutputFile,
+                                useNordVPN: Boolean(useNordVPN),
+                                useNordVpnCli: Boolean(useNordVpnCli),
+                                nordVpnCliServer: nordVpnCliServer || null,
+                                nordVpnCliTimeoutMs: nordVpnCliTimeoutMs || null,
+                        },
+                        null,
+                        2
+                )
+        );
+
         const urlSet = new Set();
         const urlsToProcess = [];
 
         const pushUrl = (candidate) => {
                 if (typeof candidate !== "string") {
+                        logDebug("Ignoring non-string URL candidate from configuration or CLI input.");
                         return;
                 }
                 const trimmed = candidate.trim();
-                if (!trimmed || urlSet.has(trimmed)) {
+                if (!trimmed) {
+                        logDebug("Skipping empty URL entry from configuration file or CLI.");
+                        return;
+                }
+                if (urlSet.has(trimmed)) {
+                        logVerbose(`Skipping duplicate URL: ${trimmed}`);
                         return;
                 }
                 urlSet.add(trimmed);
+                logDebug(`Queued URL for processing: ${trimmed}`);
                 urlsToProcess.push(trimmed);
         };
 
@@ -1742,6 +1963,10 @@ async function extractAndExport(options) {
                 }
         }
 
+        logVerbose(
+                `Total URLs queued for scraping: ${urlsToProcess.length}`
+        );
+
         if (urlsToProcess.length === 0) {
                 console.error(
                         "You must provide at least one URL via --url, SCRAPER_URL, or the configuration file."
@@ -1752,6 +1977,9 @@ async function extractAndExport(options) {
 
         if (useNordVpnCli) {
                 try {
+                        logVerbose(
+                                "NordVPN CLI workflow enabled. Attempting to establish VPN session before scraping."
+                        );
                         await ensureNordVpnCliConnection({
                                 server: nordVpnCliServer,
                                 timeoutMs: nordVpnCliTimeoutMs || 60000,
@@ -1772,6 +2000,7 @@ async function extractAndExport(options) {
 
         if (useNordVPN) {
                 if (proxyValidationError) {
+                        logDebug("Proxy validation error detail:", proxyValidationError);
                         console.error(proxyValidationError);
                         process.exitCode = 1;
                         return;
@@ -1790,6 +2019,7 @@ async function extractAndExport(options) {
 
                 proxyUrlToUse = nordVpnProxyUrl;
                 console.log("Using NordVPN via proxy:", maskProxyUrl(nordVpnProxyUrl));
+                logDebug("Effective NordVPN proxy URL:", maskProxyUrl(nordVpnProxyUrl));
         }
 
         const aggregatedLinks = [];
@@ -1799,10 +2029,19 @@ async function extractAndExport(options) {
                 console.log(`\nProcessing: ${targetUrl}`);
 
                 try {
+                        logVerbose(`Fetching content from ${targetUrl}`);
                         const response = await fetchWithOptionalProxy(targetUrl, {
                                 headers: requestHeaders,
                                 proxyUrl: proxyUrlToUse || undefined,
                         });
+
+                        logDebug(
+                                `Response metadata for ${targetUrl}: ${JSON.stringify(
+                                        { statusCode: response.statusCode, headers: response.headers },
+                                        null,
+                                        2
+                                )}`
+                        );
 
                         if (response.statusCode === 200) {
                                 console.log("Page loaded successfully.");
@@ -1814,6 +2053,7 @@ async function extractAndExport(options) {
                         }
 
                         const scripts = extractLinksDataScripts(response.body);
+                        logDebug(`Found ${scripts.length} scripts containing 'linksData' markers.`);
 
                         if (scripts.length === 0) {
                                 console.log(
@@ -1826,10 +2066,18 @@ async function extractAndExport(options) {
 
                         for (const script of scripts) {
                                 console.log(`Script found at index ${script.index}.`);
+                                logDebug(
+                                        `Analyzing script index ${script.index} (length: ${
+                                                script.content.length
+                                        } characters).`
+                                );
                                 try {
                                         const linksData = extractLinksDataFromScript(script.content);
 
                                         if (!linksData || !Array.isArray(linksData.links)) {
+                                                logDebug(
+                                                        `Script index ${script.index} did not return a valid linksData array.`
+                                                );
                                                 continue;
                                         }
 
@@ -1838,10 +2086,16 @@ async function extractAndExport(options) {
                                                 linksData.links.length,
                                                 "links"
                                         );
+                                        logDebug(
+                                                `Sample of parsed linksData keys: ${Object.keys(linksData).join(', ')}`
+                                        );
 
                                         const cleanedLinks = linksData.links
                                                 .filter((link) => {
                                                         if (!link || typeof link.url !== "string") {
+                                                                logDebug(
+                                                                        `Discarding invalid link entry from script index ${script.index}.`
+                                                                );
                                                                 return false;
                                                         }
                                                         const urlWithoutPrefix = link.url.replace(
@@ -1856,16 +2110,23 @@ async function extractAndExport(options) {
                                                 }));
 
                                         if (cleanedLinks.length === 0) {
+                                                logDebug(
+                                                        `All links discarded after cleanup for script index ${script.index}.`
+                                                );
                                                 continue;
                                         }
 
                                         aggregatedLinks.push(...cleanedLinks);
                                         exportedForUrl += cleanedLinks.length;
+                                        logDebug(
+                                                `Exported ${cleanedLinks.length} links from script index ${script.index}.`
+                                        );
                                 } catch (parseError) {
                                         console.error(
                                                 "Error parsing the linksData structure:",
                                                 parseError
                                         );
+                                        logDebug(`Problematic script content: ${script.content.slice(0, 500)}...`);
                                 }
                         }
 
@@ -1874,13 +2135,22 @@ async function extractAndExport(options) {
                                 console.log(
                                         `Total links exported for this URL: ${exportedForUrl}`
                                 );
+                                logVerbose(
+                                        `Accumulated exported links count is now ${aggregatedLinks.length}.`
+                                );
                         } else {
                                 console.log(
                                         "No script containing 'linksData' could be processed for this URL."
                                 );
+                                logVerbose(
+                                        `No exportable data found for ${targetUrl}; continuing with next target if available.`
+                                );
                         }
                 } catch (error) {
                         console.error(`Error fetching page (${targetUrl}):`, error.message);
+                        logDebug(
+                                `Detailed error for ${targetUrl}: ${error.stack || error.message}`
+                        );
                 }
         }
 
@@ -1896,11 +2166,16 @@ async function extractAndExport(options) {
 
         for (const link of aggregatedLinks) {
                 if (!link.url || seenUrls.has(link.url)) {
+                        if (link && link.url) {
+                                logVerbose(`Skipping duplicated link URL: ${link.url}`);
+                        }
                         continue;
                 }
                 seenUrls.add(link.url);
                 uniqueLinks.push(link);
         }
+
+        logDebug(`Unique links total after deduplication: ${uniqueLinks.length}`);
 
         const outputPath = path.resolve(normalizedOutputFile);
         ensureDirectoryExists(outputPath);
