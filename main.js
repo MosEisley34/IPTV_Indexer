@@ -2247,7 +2247,11 @@ function isNuxtDataPayloadScript(attributes) {
                 return false;
         }
 
-        return /\bid\s*=\s*["']__nuxt_data__["']/i.test(attributes);
+        if (!/__nuxt_data__/i.test(attributes)) {
+                return false;
+        }
+
+        return true;
 }
 
 function hasLinkDataMarker(scriptContent) {
