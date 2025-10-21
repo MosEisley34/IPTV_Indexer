@@ -137,6 +137,16 @@ node main.js \
 When the CLI workflow is enabled, the tool checks `nordvpn status` before scraping, attempts to connect automatically if the
 session is down, and keeps polling until the connection is confirmed or the timeout is reached.
 
+If the CLI reports `You are not logged in`, authenticate first:
+
+```bash
+nordvpn login
+# or, when using token-based authentication
+nordvpn login --token "<your_token_here>"
+```
+
+Occasionally the CLI also refuses to connect until you update to the latest release. When you see the message `A new version of NordVPN is available`, follow the [official Linux update guide](https://support.nordvpn.com/) for your distribution (for example, `sudo nordvpn update` on Debian-based systems or reinstalling the package from NordVPN's repository).
+
 ### Testing NordVPN connectivity
 
 Use the built-in diagnostics to confirm that your proxy or CLI session is working before hitting any target URLs:

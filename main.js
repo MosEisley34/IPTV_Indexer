@@ -1574,6 +1574,33 @@ function execNordVpn(args, timeoutMs = 15000) {
         });
 }
 
+function explainNordVpnCliFailure(error) {
+        if (!error) {
+                return null;
+        }
+
+        const stdout = typeof error.stdout === "string" ? error.stdout : "";
+        const stderr = typeof error.stderr === "string" ? error.stderr : "";
+        const combinedOutput = `${stdout}\n${stderr}`.toLowerCase();
+
+        if (combinedOutput.includes("you are not logged in")) {
+                return (
+                        "[NordVPN CLI] Authentication required. Run `nordvpn login` or " +
+                        "`nordvpn login --token <TOKEN>` in a separate shell, then retry."
+                );
+        }
+
+        if (combinedOutput.includes("a new version of nordvpn is available")) {
+                return (
+                        "[NordVPN CLI] The client reports that an update is required. " +
+                        "Follow NordVPN's Linux update instructions (https://support.nordvpn.com/) " +
+                        "to install the latest release before retrying."
+                );
+        }
+
+        return null;
+}
+
 function isNordVpnConnected(cliOutput, expectedServer) {
         const normalizedOutput = cliOutput.toLowerCase();
 
@@ -1597,6 +1624,12 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
         try {
                 await execNordVpn(["connect", server].filter(Boolean), timeoutMs);
         } catch (error) {
+                const friendlyMessage = explainNordVpnCliFailure(error);
+
+                if (friendlyMessage) {
+                        throw new Error(friendlyMessage);
+                }
+
                 throw new Error(
                         `[NordVPN CLI] Failed to start the connection: ${error.message}. ` +
                                 (error.stderr ? `Details: ${error.stderr}` : "")
@@ -1729,6 +1762,12 @@ async function runNordVpnDiagnostics(options) {
                                 throw new Error(
                                         "[NordVPN CLI] Diagnostics failed: The 'nordvpn' command is not available in PATH."
                                 );
+                        }
+
+                        const friendlyMessage = explainNordVpnCliFailure(error);
+
+                        if (friendlyMessage) {
+                                throw new Error(friendlyMessage);
                         }
 
                         throw new Error(`[NordVPN CLI] Diagnostics failed: ${error.message}`);
