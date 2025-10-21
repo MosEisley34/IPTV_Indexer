@@ -2241,16 +2241,86 @@ async function extractAndExport(options) {
 
         const aggregatedLinks = [];
         const perUrlStats = [];
+        let proxyDisabledForSession = false;
 
         for (const targetUrl of urlsToProcess) {
                 console.log(`\nProcessing: ${targetUrl}`);
 
                 try {
                         logVerbose(`Fetching content from ${targetUrl}`);
-                        const response = await fetchWithOptionalProxy(targetUrl, {
-                                headers: requestHeaders,
-                                proxyUrl: proxyUrlToUse || undefined,
-                        });
+
+                        const usingProxyForThisRequest = Boolean(proxyUrlToUse);
+                        let response;
+
+                        try {
+                                response = await fetchWithOptionalProxy(targetUrl, {
+                                        headers: requestHeaders,
+                                        proxyUrl: proxyUrlToUse || undefined,
+                                });
+                        } catch (error) {
+                                const friendlyProxyError = usingProxyForThisRequest
+                                        ? explainNordVpnProxyFailure(error, proxyUrlToUse)
+                                        : null;
+
+                                if (friendlyProxyError && useNordVpnCli) {
+                                        console.error(
+                                                `${friendlyProxyError} (while requesting ${targetUrl})`
+                                        );
+                                        logDebug(
+                                                `Detailed proxy error for ${targetUrl}: ${
+                                                        error.stack || error.message
+                                                }`
+                                        );
+                                        console.log(
+                                                "[NordVPN Proxy] Attempting the request again without the proxy " +
+                                                        "because the NordVPN CLI tunnel is active."
+                                        );
+
+                                        try {
+                                                response = await fetchWithOptionalProxy(targetUrl, {
+                                                        headers: requestHeaders,
+                                                });
+
+                                                if (!proxyDisabledForSession) {
+                                                        proxyDisabledForSession = true;
+                                                        proxyUrlToUse = "";
+                                                        console.log(
+                                                                "[NordVPN Proxy] Proxy usage has been disabled for the " +
+                                                                        "remaining URLs in this session."
+                                                        );
+                                                }
+                                        } catch (fallbackError) {
+                                                console.error(
+                                                        `Error fetching page (${targetUrl}):`,
+                                                        fallbackError.message
+                                                );
+                                                logDebug(
+                                                        `Detailed error for ${targetUrl} after proxy fallback: ${
+                                                                fallbackError.stack || fallbackError.message
+                                                        }`
+                                                );
+                                                continue;
+                                        }
+                                } else {
+                                        if (friendlyProxyError) {
+                                                console.error(
+                                                        `${friendlyProxyError} (while requesting ${targetUrl})`
+                                                );
+                                        } else {
+                                                console.error(
+                                                        `Error fetching page (${targetUrl}):`,
+                                                        error.message
+                                                );
+                                        }
+
+                                        logDebug(
+                                                `Detailed error for ${targetUrl}: ${
+                                                        error.stack || error.message
+                                                }`
+                                        );
+                                        continue;
+                                }
+                        }
 
                         logDebug(
                                 `Response metadata for ${targetUrl}: ${JSON.stringify(
