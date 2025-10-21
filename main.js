@@ -171,10 +171,17 @@ async function main() {
         await extractAndExport(options);
 }
 
-main().catch((error) => {
-        console.error("Error inesperado:", error);
-        process.exitCode = 1;
-});
+if (require.main === module) {
+        main().catch((error) => {
+                console.error("Error inesperado:", error);
+                process.exitCode = 1;
+        });
+}
+
+module.exports = {
+        extractLinksDataScripts,
+        extractLinksDataFromScript,
+};
 
 function parseYamlScalar(rawValue) {
         const trimmed = rawValue.trim();
@@ -2081,7 +2088,7 @@ function extractLinksDataScripts(html) {
 
         while ((match = scriptRegex.exec(html)) !== null) {
                 const content = match[1];
-                if (content && content.includes("linksData")) {
+                if (hasLinkDataMarker(content)) {
                         results.push({ index, content });
                 }
                 index += 1;
@@ -2090,7 +2097,33 @@ function extractLinksDataScripts(html) {
         return results;
 }
 
+function hasLinkDataMarker(scriptContent) {
+        if (typeof scriptContent !== "string" || scriptContent.length === 0) {
+                return false;
+        }
+
+        return scriptContent.includes("linksData") || scriptContent.includes("__NUXT__");
+}
+
 function extractLinksDataFromScript(scriptContent) {
+        if (typeof scriptContent !== "string" || scriptContent.length === 0) {
+                return null;
+        }
+
+        const legacyLinksData = parseLegacyLinksData(scriptContent);
+        if (legacyLinksData) {
+                return legacyLinksData;
+        }
+
+        const nuxtLinksData = parseNuxtLinksData(scriptContent);
+        if (nuxtLinksData) {
+                return nuxtLinksData;
+        }
+
+        return null;
+}
+
+function parseLegacyLinksData(scriptContent) {
         const regex = /(?:const|var|let)\s+linksData\s*=\s*({[\s\S]*?});/;
         const match = scriptContent.match(regex);
 
@@ -2100,7 +2133,277 @@ function extractLinksDataFromScript(scriptContent) {
 
         const linksDataString = match[1];
 
-        return vm.runInNewContext(`(${linksDataString})`, {});
+        try {
+                return vm.runInNewContext(`(${linksDataString})`, {});
+        } catch (error) {
+                logDebug("Failed to evaluate legacy linksData script:", error.message);
+                return null;
+        }
+}
+
+function parseNuxtLinksData(scriptContent) {
+        if (!scriptContent.includes("__NUXT__")) {
+                return null;
+        }
+
+        const nuxtState = extractNuxtState(scriptContent);
+
+        if (!nuxtState) {
+                return null;
+        }
+
+        const links = extractLinksFromNuxtState(nuxtState);
+
+        if (links.length === 0) {
+                return null;
+        }
+
+        return { links };
+}
+
+function extractNuxtState(scriptContent) {
+        const sandboxWindow = {};
+        sandboxWindow.window = sandboxWindow;
+        sandboxWindow.self = sandboxWindow;
+        sandboxWindow.globalThis = sandboxWindow;
+
+        const sandbox = {
+                window: sandboxWindow,
+                self: sandboxWindow,
+                globalThis: sandboxWindow,
+                console: {
+                        log: () => {},
+                        info: () => {},
+                        warn: () => {},
+                        error: () => {},
+                        debug: () => {},
+                },
+        };
+
+        try {
+                vm.runInNewContext(scriptContent, sandbox, { timeout: 100 });
+        } catch (error) {
+                logDebug("Failed to evaluate Nuxt state script directly:", error.message);
+                const literal = extractObjectLiteralAfterAssignment(scriptContent, /window\.__NUXT__\s*=\s*/);
+
+                if (!literal) {
+                        return null;
+                }
+
+                try {
+                        return vm.runInNewContext(`(${literal})`, {});
+                } catch (innerError) {
+                        logDebug("Failed to evaluate extracted Nuxt literal:", innerError.message);
+                        return null;
+                }
+        }
+
+        return sandboxWindow.__NUXT__ ?? sandbox.__NUXT__ ?? null;
+}
+
+function extractObjectLiteralAfterAssignment(scriptContent, assignmentRegex) {
+        const match = assignmentRegex.exec(scriptContent);
+
+        if (!match) {
+                return null;
+        }
+
+        let startIndex = match.index + match[0].length;
+
+        while (startIndex < scriptContent.length && /[\s;]/.test(scriptContent[startIndex])) {
+                startIndex += 1;
+        }
+
+        if (scriptContent[startIndex] !== "{") {
+                return null;
+        }
+
+        let depth = 0;
+        let inString = false;
+        let stringDelimiter = "";
+        let escaped = false;
+
+        for (let position = startIndex; position < scriptContent.length; position += 1) {
+                const char = scriptContent[position];
+
+                if (escaped) {
+                        escaped = false;
+                        continue;
+                }
+
+                if (char === "\\") {
+                        escaped = true;
+                        continue;
+                }
+
+                if (inString) {
+                        if (char === stringDelimiter) {
+                                inString = false;
+                        }
+                        continue;
+                }
+
+                if (char === '"' || char === "'" || char === "`") {
+                        inString = true;
+                        stringDelimiter = char;
+                        continue;
+                }
+
+                if (char === "{") {
+                        depth += 1;
+                        continue;
+                }
+
+                if (char === "}") {
+                        depth -= 1;
+                        if (depth === 0) {
+                                return scriptContent.slice(startIndex, position + 1);
+                        }
+                        continue;
+                }
+        }
+
+        return null;
+}
+
+function extractLinksFromNuxtState(nuxtState) {
+        const results = [];
+        const seenUrls = new Set();
+        const visited = new Set();
+
+        function extractAceStreamUrl(rawValue) {
+                if (typeof rawValue !== "string") {
+                        return null;
+                }
+
+                const match = rawValue.match(/acestream:\/\/[^\s"'<>]+/i);
+
+                if (match) {
+                        return match[0];
+                }
+
+                if (rawValue.includes("acestream://")) {
+                        return rawValue.trim();
+                }
+
+                return null;
+        }
+
+        function findNameInObject(object) {
+                if (!object || typeof object !== "object") {
+                        return null;
+                }
+
+                const preferredKeys = [
+                        "title",
+                        "name",
+                        "channelName",
+                        "channel",
+                        "label",
+                        "displayName",
+                        "heading",
+                ];
+
+                for (const key of preferredKeys) {
+                        const value = object[key];
+                        if (typeof value === "string" && value.trim().length > 0) {
+                                return value.trim();
+                        }
+                }
+
+                const nestedKeys = ["attributes", "content", "details", "fields", "meta", "data"];
+
+                for (const key of nestedKeys) {
+                        const nestedValue = object[key];
+                        if (nestedValue && typeof nestedValue === "object") {
+                                const nestedName = findNameInObject(nestedValue);
+                                if (nestedName) {
+                                        return nestedName;
+                                }
+                        }
+                }
+
+                return null;
+        }
+
+        function findNameInParents(parents) {
+                for (let idx = parents.length - 1; idx >= 0; idx -= 1) {
+                        const candidate = findNameInObject(parents[idx]);
+                        if (candidate) {
+                                return candidate;
+                        }
+                }
+                return null;
+        }
+
+        function recordLink(url, parents, sourceObject) {
+                if (!url || seenUrls.has(url)) {
+                        return;
+                }
+
+                const nameFromSource = findNameInObject(sourceObject);
+                const name = nameFromSource || findNameInParents(parents) || "Channel";
+
+                results.push({ name, url });
+                seenUrls.add(url);
+        }
+
+        function traverse(value, parents) {
+                if (!value || typeof value !== "object") {
+                        return;
+                }
+
+                if (visited.has(value)) {
+                        return;
+                }
+                visited.add(value);
+
+                if (Array.isArray(value)) {
+                        for (const item of value) {
+                                if (typeof item === "string") {
+                                        const url = extractAceStreamUrl(item);
+                                        if (url) {
+                                                recordLink(url, parents, {});
+                                        }
+                                } else {
+                                        traverse(item, parents);
+                                }
+                        }
+                        return;
+                }
+
+                const url = extractAceStreamUrlFromObject(value);
+                if (url) {
+                        recordLink(url, parents, value);
+                }
+
+                const nextParents = parents.concat(value);
+
+                for (const child of Object.values(value)) {
+                        if (typeof child === "string") {
+                                const embeddedUrl = extractAceStreamUrl(child);
+                                if (embeddedUrl) {
+                                        recordLink(embeddedUrl, nextParents, value);
+                                        continue;
+                                }
+                        }
+                        traverse(child, nextParents);
+                }
+        }
+
+        function extractAceStreamUrlFromObject(object) {
+                for (const value of Object.values(object)) {
+                        const url = extractAceStreamUrl(value);
+                        if (url) {
+                                return url;
+                        }
+                }
+                return null;
+        }
+
+        traverse(nuxtState, []);
+
+        return results;
 }
 
 async function extractAndExport(options) {
@@ -2340,11 +2643,13 @@ async function extractAndExport(options) {
                         }
 
                         const scripts = extractLinksDataScripts(response.body);
-                        logDebug(`Found ${scripts.length} scripts containing 'linksData' markers.`);
+                        logDebug(
+                                `Found ${scripts.length} scripts containing potential channel data markers.`
+                        );
 
                         if (scripts.length === 0) {
                                 console.log(
-                                        "Could not find the 'linksData' variable in any scripts for this URL."
+                                        "Could not find any scripts containing recognizable channel data markers for this URL."
                                 );
                                 continue;
                         }
@@ -2363,7 +2668,7 @@ async function extractAndExport(options) {
 
                                         if (!linksData || !Array.isArray(linksData.links)) {
                                                 logDebug(
-                                                        `Script index ${script.index} did not return a valid linksData array.`
+                                                        `Script index ${script.index} did not return valid channel data.`
                                                 );
                                                 continue;
                                         }
@@ -2374,7 +2679,7 @@ async function extractAndExport(options) {
                                                 "links"
                                         );
                                         logDebug(
-                                                `Sample of parsed linksData keys: ${Object.keys(linksData).join(', ')}`
+                                                `Sample of parsed channel data keys: ${Object.keys(linksData).join(', ')}`
                                         );
 
                                         const cleanedLinks = linksData.links
@@ -2410,7 +2715,7 @@ async function extractAndExport(options) {
                                         );
                                 } catch (parseError) {
                                         console.error(
-                                                "Error parsing the linksData structure:",
+                                                "Error parsing the channel data structure:",
                                                 parseError
                                         );
                                         logDebug(`Problematic script content: ${script.content.slice(0, 500)}...`);
@@ -2427,7 +2732,7 @@ async function extractAndExport(options) {
                                 );
                         } else {
                                 console.log(
-                                        "No script containing 'linksData' could be processed for this URL."
+                                        "No script containing channel data could be processed for this URL."
                                 );
                                 logVerbose(
                                         `No exportable data found for ${targetUrl}; continuing with next target if available.`
