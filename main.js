@@ -1107,6 +1107,37 @@ function normalizeProxyUrl(rawUrl) {
         return { url: buildProxyUrlFromParsed(parsed) };
 }
 
+function extractHostnameFromUrl(value) {
+        if (!value) {
+                return "";
+        }
+
+        try {
+                return new URL(value).hostname || "";
+        } catch (error) {
+                return "";
+        }
+}
+
+function explainNordVpnProxyFailure(error, proxyUrl) {
+        if (!error) {
+                return null;
+        }
+
+        const hostname = extractHostnameFromUrl(proxyUrl) || proxyUrl || "the configured proxy host";
+
+        if (error.code === "ENOTFOUND") {
+                return (
+                        `[NordVPN Proxy] DNS lookup failed for '${hostname}'. ` +
+                        "Update your NordVPN proxy configuration with the exact hostname provided by NordVPN " +
+                        "(for example http://user:pass@us1234.nordvpn.com:89) or disable the proxy integration " +
+                        "if you only intend to use the CLI tunnel."
+                );
+        }
+
+        return null;
+}
+
 function parseCliArgs() {
         const args = process.argv.slice(2);
         let configPathArg;
@@ -1707,6 +1738,12 @@ async function verifyNordVpnProxyConnection(proxyUrl) {
                         `[NordVPN Proxy] Connectivity verified successfully. Reported exit IP: ${reportedIp}`
                 );
         } catch (error) {
+                const friendlyMessage = explainNordVpnProxyFailure(error, proxyUrl);
+
+                if (friendlyMessage) {
+                        throw new Error(friendlyMessage);
+                }
+
                 throw new Error(`[NordVPN Proxy] Connectivity test failed: ${error.message}`);
         }
 }
@@ -2327,7 +2364,16 @@ async function extractAndExport(options) {
                                 );
                         }
                 } catch (error) {
-                        console.error(`Error fetching page (${targetUrl}):`, error.message);
+                        const friendlyProxyError = proxyUrlToUse
+                                ? explainNordVpnProxyFailure(error, proxyUrlToUse)
+                                : null;
+
+                        if (friendlyProxyError) {
+                                console.error(`${friendlyProxyError} (while requesting ${targetUrl})`);
+                        } else {
+                                console.error(`Error fetching page (${targetUrl}):`, error.message);
+                        }
+
                         logDebug(
                                 `Detailed error for ${targetUrl}: ${error.stack || error.message}`
                         );
