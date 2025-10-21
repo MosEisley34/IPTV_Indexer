@@ -2459,24 +2459,115 @@ function extractObjectLiteralAfterAssignment(scriptContent, assignmentRegex) {
 function extractLinksFromNuxtState(nuxtState) {
         const results = [];
         const seenUrls = new Set();
-        const visited = new Set();
+        const visited = new WeakSet();
 
-        function extractAceStreamUrl(rawValue) {
-                if (typeof rawValue !== "string") {
+        function sanitizeRawString(value) {
+                if (typeof value !== "string") {
+                        return "";
+                }
+
+                return value
+                        .replace(/\\u0026/gi, "&")
+                        .replace(/&amp;/gi, "&")
+                        .replace(/\\\//g, "/")
+                        .replace(/\s+/g, " ")
+                        .trim();
+        }
+
+        function normalizeStreamUrl(rawUrl) {
+                if (typeof rawUrl !== "string") {
                         return null;
                 }
 
-                const match = rawValue.match(/acestream:\/\/[^\s"'<>]+/i);
+                let normalized = sanitizeRawString(rawUrl)
+                        .replace(/^"+|"+$/g, "")
+                        .replace(/^'+|'+$/g, "")
+                        .replace(/[),;]+$/g, "")
+                        .replace(/[\])}]+$/g, "");
 
-                if (match) {
-                        return match[0];
+                if (!/^https?:\/\//i.test(normalized)) {
+                        return null;
                 }
 
-                if (rawValue.includes("acestream://")) {
-                        return rawValue.trim();
+                if (normalized.toLowerCase().startsWith("acestream://")) {
+                        return null;
                 }
 
-                return null;
+                return normalized;
+        }
+
+        function isSupportedStreamUrl(url) {
+                if (typeof url !== "string") {
+                        return false;
+                }
+
+                const lower = url.toLowerCase();
+
+                if (!/^https?:\/\//.test(url)) {
+                        return false;
+                }
+
+                if (lower.includes("acestream://")) {
+                        return false;
+                }
+
+                if (/(?:\.m3u8|\.mpd)/.test(lower)) {
+                        return true;
+                }
+
+                if (/\.ism\/manifest/.test(lower)) {
+                        return true;
+                }
+
+                if (/\/manifest\.(?:m3u8|mpd)/.test(lower)) {
+                        return true;
+                }
+
+                if (/(?:format|type|protocol)=(?:hls|dash|m3u8|mpd)/.test(lower)) {
+                        return true;
+                }
+
+                if (/mime(?:type|)=application%2fx-mpegurl/.test(lower)) {
+                        return true;
+                }
+
+                return false;
+        }
+
+        function collectStreamUrlsFromString(rawValue) {
+                if (typeof rawValue !== "string") {
+                        return [];
+                }
+
+                const sanitized = sanitizeRawString(rawValue);
+
+                if (sanitized.length === 0) {
+                        return [];
+                }
+
+                const matches = [];
+                const regex = /https?:\/\/[^\s"'<>\\)]+/gi;
+                let match;
+
+                while ((match = regex.exec(sanitized)) !== null) {
+                        const candidate = normalizeStreamUrl(match[0]);
+
+                        if (candidate && isSupportedStreamUrl(candidate)) {
+                                matches.push(candidate);
+                        }
+                }
+
+                if (matches.length > 0) {
+                        return matches;
+                }
+
+                const fallback = normalizeStreamUrl(sanitized);
+
+                if (fallback && isSupportedStreamUrl(fallback)) {
+                        return [fallback];
+                }
+
+                return [];
         }
 
         function findNameInObject(object) {
@@ -2539,21 +2630,21 @@ function extractLinksFromNuxtState(nuxtState) {
         }
 
         function traverse(value, parents) {
-                if (!value || typeof value !== "object") {
-                        return;
+                if (value && typeof value === "object") {
+                        if (visited.has(value)) {
+                                return;
+                        }
+                        visited.add(value);
                 }
-
-                if (visited.has(value)) {
-                        return;
-                }
-                visited.add(value);
 
                 if (Array.isArray(value)) {
                         for (const item of value) {
                                 if (typeof item === "string") {
-                                        const url = extractAceStreamUrl(item);
-                                        if (url) {
-                                                recordLink(url, parents, {});
+                                        const urls = collectStreamUrlsFromString(item);
+                                        if (urls.length > 0) {
+                                                for (const url of urls) {
+                                                        recordLink(url, parents, {});
+                                                }
                                         }
                                 } else {
                                         traverse(item, parents);
@@ -2562,33 +2653,33 @@ function extractLinksFromNuxtState(nuxtState) {
                         return;
                 }
 
-                const url = extractAceStreamUrlFromObject(value);
-                if (url) {
-                        recordLink(url, parents, value);
+                if (!value || typeof value !== "object") {
+                        if (typeof value === "string") {
+                                const urls = collectStreamUrlsFromString(value);
+                                if (urls.length > 0) {
+                                        const source = parents.length > 0 ? parents[parents.length - 1] : {};
+                                        for (const url of urls) {
+                                                recordLink(url, parents, source);
+                                        }
+                                }
+                        }
+                        return;
                 }
 
                 const nextParents = parents.concat(value);
 
                 for (const child of Object.values(value)) {
                         if (typeof child === "string") {
-                                const embeddedUrl = extractAceStreamUrl(child);
-                                if (embeddedUrl) {
-                                        recordLink(embeddedUrl, nextParents, value);
+                                const urls = collectStreamUrlsFromString(child);
+                                if (urls.length > 0) {
+                                        for (const url of urls) {
+                                                recordLink(url, nextParents, value);
+                                        }
                                         continue;
                                 }
                         }
                         traverse(child, nextParents);
                 }
-        }
-
-        function extractAceStreamUrlFromObject(object) {
-                for (const value of Object.values(object)) {
-                        const url = extractAceStreamUrl(value);
-                        if (url) {
-                                return url;
-                        }
-                }
-                return null;
         }
 
         traverse(nuxtState, []);
@@ -2899,15 +2990,28 @@ async function extractAndExport(options) {
                                                                 );
                                                                 return false;
                                                         }
-                                                        const urlWithoutPrefix = link.url.replace(
-                                                                "acestream://",
-                                                                ""
-                                                        );
-                                                        return urlWithoutPrefix.length > 0;
+
+                                                        const trimmedUrl = link.url.trim();
+
+                                                        if (!/^https?:\/\//i.test(trimmedUrl)) {
+                                                                logDebug(
+                                                                        `Discarding non-HTTP stream URL from script index ${script.index}.`
+                                                                );
+                                                                return false;
+                                                        }
+
+                                                        if (/^acestream:\/\//i.test(trimmedUrl)) {
+                                                                logDebug(
+                                                                        `Discarding AceStream URL from script index ${script.index}.`
+                                                                );
+                                                                return false;
+                                                        }
+
+                                                        return true;
                                                 })
                                                 .map((link) => ({
                                                         name: link.name || "Channel",
-                                                        url: link.url,
+                                                        url: link.url.trim().replace(/\\u0026/gi, "&").replace(/&amp;/gi, "&"),
                                                 }));
 
                                         if (cleanedLinks.length === 0) {

@@ -38,21 +38,25 @@ test("extractLinksDataFromScript parses window.__NUXT__ channel payloads", async
 
         assert.ok(linksData, "expected Nuxt state to produce channel data");
         assert.ok(Array.isArray(linksData.links), "expected links array from Nuxt data");
-        assert.equal(linksData.links.length, 3, "expected three channels extracted from Nuxt state");
+        assert.equal(linksData.links.length, 4, "expected four streams extracted from Nuxt state");
         assert.deepEqual(
                 linksData.links,
                 [
                         {
                                 name: "Tennis Channel Plus 1",
-                                url: "acestream://tennis-channel-plus-1",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-1/master.m3u8?hdnea=token-one",
+                        },
+                        {
+                                name: "Tennis Channel Plus 1",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-1/manifest.mpd?hdnea=token-one",
                         },
                         {
                                 name: "Tennis Channel Plus 2",
-                                url: "acestream://tennis-channel-plus-2",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-2/master.m3u8?hdnea=token-two",
                         },
                         {
                                 name: "Tennis Channel Extra",
-                                url: "acestream://tennis-channel-extra",
+                                url: "https://plus-live.tennischannel.example.com/live/extra/master.m3u8?hdnea=token-extra",
                         },
                 ]
         );
@@ -68,21 +72,25 @@ test("extractLinksDataFromScript parses __NUXT_DATA__ JSON payloads", async () =
 
         assert.ok(linksData, "expected Nuxt payload JSON to produce channel data");
         assert.ok(Array.isArray(linksData.links), "expected links array from Nuxt payload");
-        assert.equal(linksData.links.length, 3, "expected three channels extracted from Nuxt payload");
+        assert.equal(linksData.links.length, 4, "expected four streams extracted from Nuxt payload");
         assert.deepEqual(
                 linksData.links,
                 [
                         {
                                 name: "Tennis Channel Plus 1",
-                                url: "acestream://tennis-channel-plus-1",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-1/master.m3u8?hdnea=token-one",
+                        },
+                        {
+                                name: "Tennis Channel Plus 1",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-1/manifest.mpd?hdnea=token-one",
                         },
                         {
                                 name: "Tennis Channel Plus 2",
-                                url: "acestream://tennis-channel-plus-2",
+                                url: "https://plus-live.tennischannel.example.com/live/plus-2/master.m3u8?hdnea=token-two",
                         },
                         {
                                 name: "Tennis Channel Extra",
-                                url: "acestream://tennis-channel-extra",
+                                url: "https://plus-live.tennischannel.example.com/live/extra/master.m3u8?hdnea=token-extra",
                         },
                 ]
         );

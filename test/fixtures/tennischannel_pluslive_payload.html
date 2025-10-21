@@ -14,14 +14,17 @@
                     {
                         "content": {
                             "title": "Tennis Channel Plus 1",
-                            "streamUrl": "acestream://tennis-channel-plus-1"
+                            "playback": {
+                                "hls": "https://plus-live.tennischannel.example.com/live/plus-1/master.m3u8?hdnea=token-one",
+                                "dash": "https://plus-live.tennischannel.example.com/live/plus-1/manifest.mpd?hdnea=token-one"
+                            }
                         }
                     },
                     {
                         "content": {
                             "title": "Tennis Channel Plus 2",
                             "stream": {
-                                "url": "acestream://tennis-channel-plus-2"
+                                "url": "https://plus-live.tennischannel.example.com/live/plus-2/master.m3u8?hdnea=token-two"
                             }
                         }
                     }
@@ -34,7 +37,7 @@
                     {
                         "attributes": {
                             "name": "Tennis Channel Extra",
-                            "streamingUrl": "acestream://tennis-channel-extra"
+                            "streamingUrl": "https://plus-live.tennischannel.example.com/live/extra/master.m3u8?hdnea=token-extra"
                         }
                     }
                 ]
