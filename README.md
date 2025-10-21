@@ -134,12 +134,37 @@ node main.js \
   --nordvpn-cli-timeout=90000
 ```
 
-When the CLI workflow is enabled, the following happens before the Axios request is made:
+When the CLI workflow is enabled, the tool checks `nordvpn status` before scraping, attempts to connect automatically if the
+session is down, and keeps polling until the connection is confirmed or the timeout is reached.
 
-1. `nordvpn status` is executed to check the current state.
-2. If not connected, `nordvpn connect` is executed (optionally with the server name you provided).
-3. The scraper polls `nordvpn status` until the connection is confirmed or the timeout is reached.
+If the CLI reports `You are not logged in`, authenticate first:
 
+```bash
+nordvpn login
+# or, when using token-based authentication
+nordvpn login --token "<your_token_here>"
+```
+
+Occasionally the CLI also refuses to connect until you update to the latest release. When you see the message `A new version of NordVPN is available`, follow the [official Linux update guide](https://support.nordvpn.com/) for your distribution (for example, `sudo nordvpn update` on Debian-based systems or reinstalling the package from NordVPN's repository).
+
+### Testing NordVPN connectivity
+
+Use the built-in diagnostics to confirm that your proxy or CLI session is working before hitting any target URLs:
+
+```bash
+# For CLI-managed connections
+node main.js --use-nordvpn-cli --nordvpn-cli=us --test-nordvpn
+
+# For proxy-based connections
+node main.js --use-nordvpn --nordvpn-proxy="http://user:pass@proxy.nordvpn.com:89" --test-nordvpn
+```
+
+The command executes a status check for the CLI workflow and reaches out to `https://api.ipify.org` through the proxy to verify
+the exit IP. You can also enable the same test through the `TEST_NORDVPN=true` environment variable or via the npm script:
+
+```bash
+npm run test:nordvpn
+```
 If the CLI binary is missing, returns an error, or the connection is not established in time, the scraper logs the failure and exits gracefully so you can inspect the CLI output.
 
 ## Example Output
