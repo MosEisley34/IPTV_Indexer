@@ -13,6 +13,7 @@ const DEFAULT_USER_AGENT =
         "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
+const DEFAULT_IP_CHECK_URL = "https://api.ipify.org?format=json";
 
 const LOG_LEVELS = {
         silent: 0,
@@ -153,6 +154,17 @@ async function main() {
                         configPath: options.configFilePath,
                         existingConfig: isPlainObject(options.rawConfig) ? options.rawConfig : {},
                 });
+                return;
+        }
+
+        if (options.testNordVpn) {
+                try {
+                        const success = await runNordVpnDiagnostics(options);
+                        process.exitCode = success ? 0 : 1;
+                } catch (error) {
+                        console.error(error.message);
+                        process.exitCode = 1;
+                }
                 return;
         }
 
@@ -1103,6 +1115,7 @@ function parseCliArgs() {
         let runSetupWizard = false;
         let requestedLogLevel;
         let verboseFlagCount = 0;
+        let requestedNordVpnTest = false;
 
         for (const arg of args) {
                 if (arg.startsWith('--config=')) {
@@ -1119,6 +1132,8 @@ function parseCliArgs() {
                         requestedLogLevel = 'debug';
                 } else if (arg.startsWith('--log-level=')) {
                         requestedLogLevel = arg.slice('--log-level='.length);
+                } else if (arg === '--test-nordvpn') {
+                        requestedNordVpnTest = true;
                 }
         }
 
@@ -1134,6 +1149,9 @@ function parseCliArgs() {
                 outputFormat: envOutputFormat,
                 outputFile: envOutputFile,
                 logLevel: envLogLevel,
+                testNordVpn:
+                        process.env.TEST_NORDVPN === 'true' ||
+                        process.env.TEST_NORDVPN === '1',
                 useNordVPN:
                         process.env.USE_NORDVPN === 'true' ||
                         process.env.USE_NORDVPN === '1',
@@ -1330,6 +1348,11 @@ function parseCliArgs() {
                         continue;
                 }
 
+                if (arg === '--test-nordvpn') {
+                        config.testNordVpn = true;
+                        continue;
+                }
+
                 if (arg.startsWith('--nordvpn-cli-timeout=')) {
                         const timeoutMs = Number(arg.slice('--nordvpn-cli-timeout='.length));
                         if (!Number.isNaN(timeoutMs)) {
@@ -1372,6 +1395,10 @@ function parseCliArgs() {
 
         if (requestedOutputFile !== undefined) {
                 config.outputFile = requestedOutputFile;
+        }
+
+        if (requestedNordVpnTest) {
+                config.testNordVpn = true;
         }
 
         if (typeof config.url === 'string') {
@@ -1444,6 +1471,7 @@ function logHelp() {
                 `  --use-nordvpn-cli       Start and verify the connection using the NordVPN CLI.\n` +
                 `  --nordvpn-cli=<server>  Connect via CLI to the specified server.\n` +
                 `  --nordvpn-cli-timeout=<ms> Max time for the CLI to connect (default 60000 ms).\n` +
+                `  --test-nordvpn          Run a connectivity test for the configured NordVPN workflow and exit.\n` +
                 `  --setup                 Launch the interactive wizard to generate config.yaml.\n` +
                 `  --help                  Show this help message.\n\n` +
                 `Environment variables:\n` +
@@ -1460,7 +1488,8 @@ function logHelp() {
                 `  NORDVPN_PASSWORD        Proxy password (if applicable).\n` +
                 `  USE_NORDVPN_CLI=true    Run the NordVPN CLI before scraping.\n` +
                 `  NORDVPN_CLI_SERVER      Server the CLI should connect to (optional).\n` +
-                `  NORDVPN_CLI_TIMEOUT_MS  Max wait time for the CLI connection.\n\n` +
+                `  NORDVPN_CLI_TIMEOUT_MS  Max wait time for the CLI connection.\n` +
+                `  TEST_NORDVPN=true       Run the NordVPN connectivity diagnostics on startup.\n\n` +
                 `The configuration file can define multiple URLs (scraper.urls) and NordVPN credentials, ` +
                 `including parameters such as nordvpn.cliServer.`);
 }
@@ -1487,6 +1516,7 @@ function summarizeOptionsForLogs(options) {
                 outputFormat,
                 outputFile,
                 logLevel,
+                testNordVpn,
                 useNordVPN,
                 useNordVpnCli,
                 nordVpnProxyUrl,
@@ -1502,6 +1532,7 @@ function summarizeOptionsForLogs(options) {
                 outputFormat,
                 outputFile,
                 logLevel,
+                testNordVpn: Boolean(testNordVpn),
                 useNordVPN: Boolean(useNordVPN),
                 useNordVpnCli: Boolean(useNordVpnCli),
                 nordVpnProxyUrl: nordVpnProxyUrl ? maskProxyUrl(nordVpnProxyUrl) : null,
@@ -1604,6 +1635,116 @@ async function ensureNordVpnCliConnection({ server, timeoutMs = 60000 }) {
         throw new Error(
                 `[NordVPN CLI] Timed out after ${timeoutMs} ms while waiting for the connection.`
         );
+}
+
+async function verifyNordVpnProxyConnection(proxyUrl) {
+        if (!proxyUrl) {
+                throw new Error("NordVPN proxy URL is not configured.");
+        }
+
+        console.log(
+                `[NordVPN Proxy] Testing connectivity using ${maskProxyUrl(proxyUrl)} against ${DEFAULT_IP_CHECK_URL}`
+        );
+
+        try {
+                const response = await fetchWithOptionalProxy(DEFAULT_IP_CHECK_URL, {
+                        proxyUrl,
+                });
+
+                if (response.statusCode !== 200) {
+                        throw new Error(
+                                `Unexpected response status ${response.statusCode} from IP check service.`
+                        );
+                }
+
+                let reportedIp = "unknown";
+
+                try {
+                        const data = JSON.parse(response.body || "{}");
+                        if (data && typeof data.ip === "string" && data.ip.trim()) {
+                                reportedIp = data.ip.trim();
+                        }
+                } catch (parseError) {
+                        throw new Error(
+                                `Failed to parse response from IP check service: ${parseError.message}`
+                        );
+                }
+
+                console.log(
+                        `[NordVPN Proxy] Connectivity verified successfully. Reported exit IP: ${reportedIp}`
+                );
+        } catch (error) {
+                throw new Error(`[NordVPN Proxy] Connectivity test failed: ${error.message}`);
+        }
+}
+
+async function runNordVpnDiagnostics(options) {
+        console.log("Starting NordVPN connectivity diagnostics...\n");
+
+        const {
+                useNordVpnCli,
+                useNordVPN,
+                nordVpnCliServer,
+                nordVpnCliTimeoutMs,
+                nordVpnProxyUrl,
+                proxyValidationError,
+        } = options;
+
+        if (!useNordVpnCli && !useNordVPN) {
+                console.log(
+                        "NordVPN usage is disabled. Enable --use-nordvpn or --use-nordvpn-cli to run diagnostics."
+                );
+                return false;
+        }
+
+        let cliVerified = !useNordVpnCli;
+        let proxyVerified = !useNordVPN;
+
+        if (useNordVpnCli) {
+                console.log("[NordVPN CLI] Checking current connection status...");
+
+                try {
+                        const { stdout } = await execNordVpn(["status"], nordVpnCliTimeoutMs || 15000);
+
+                        if (isNordVpnConnected(stdout, nordVpnCliServer)) {
+                                console.log("[NordVPN CLI] Status indicates an active VPN connection.");
+                                cliVerified = true;
+                        }
+
+                        if (!cliVerified) {
+                                console.log(
+                                        "[NordVPN CLI] No active connection detected. Attempting to establish a new session..."
+                                );
+
+                                await ensureNordVpnCliConnection({
+                                        server: nordVpnCliServer,
+                                        timeoutMs: nordVpnCliTimeoutMs || 60000,
+                                });
+
+                                console.log("[NordVPN CLI] Connection established and verified successfully.");
+                                cliVerified = true;
+                        }
+                } catch (error) {
+                        if (error && error.code === "ENOENT") {
+                                throw new Error(
+                                        "[NordVPN CLI] Diagnostics failed: The 'nordvpn' command is not available in PATH."
+                                );
+                        }
+
+                        throw new Error(`[NordVPN CLI] Diagnostics failed: ${error.message}`);
+                }
+        }
+
+        if (useNordVPN) {
+                if (proxyValidationError) {
+                        throw new Error(proxyValidationError);
+                }
+
+                await verifyNordVpnProxyConnection(nordVpnProxyUrl);
+                proxyVerified = true;
+        }
+
+        return cliVerified && proxyVerified;
 }
 
 function collectStream(stream) {
