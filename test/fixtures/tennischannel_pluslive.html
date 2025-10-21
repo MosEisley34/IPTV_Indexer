@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Tennis Channel Plus Live</title>
+</head>
+<body>
+    <script>
+    window.__NUXT__ = {
+        data: [
+            {
+                page: {
+                    sections: [
+                        {
+                            content: {
+                                title: "Tennis Channel Plus 1",
+                                streamUrl: "acestream://tennis-channel-plus-1"
+                            }
+                        },
+                        {
+                            content: {
+                                title: "Tennis Channel Plus 2",
+                                stream: {
+                                    url: "acestream://tennis-channel-plus-2"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        state: {
+            featuredChannels: [
+                {
+                    attributes: {
+                        name: "Tennis Channel Extra",
+                        streamingUrl: "acestream://tennis-channel-extra"
+                    }
+                }
+            ]
+        }
+    };
+    </script>
+</body>
+</html>
