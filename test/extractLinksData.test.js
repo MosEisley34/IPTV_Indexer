@@ -10,9 +10,9 @@ function readFixture(name) {
         return fs.readFileSync(fixturePath, "utf8");
 }
 
-test("extractLinksDataFromScript parses legacy linksData assignments", () => {
+test("extractLinksDataFromScript parses legacy linksData assignments", async () => {
         const html = readFixture("legacy_linksData.html");
-        const scripts = extractLinksDataScripts(html);
+        const scripts = await extractLinksDataScripts(html);
 
         assert.equal(scripts.length, 1, "expected one script to match the legacy marker");
 
@@ -28,9 +28,9 @@ test("extractLinksDataFromScript parses legacy linksData assignments", () => {
         );
 });
 
-test("extractLinksDataFromScript parses window.__NUXT__ channel payloads", () => {
+test("extractLinksDataFromScript parses window.__NUXT__ channel payloads", async () => {
         const html = readFixture("tennischannel_pluslive.html");
-        const scripts = extractLinksDataScripts(html);
+        const scripts = await extractLinksDataScripts(html);
 
         assert.equal(scripts.length, 1, "expected one script with Nuxt state to be detected");
 
@@ -55,5 +55,31 @@ test("extractLinksDataFromScript parses window.__NUXT__ channel payloads", () =>
                                 url: "acestream://tennis-channel-extra",
                         },
                 ]
+        );
+});
+
+test("extractLinksDataScripts fetches external chunk scripts when needed", async () => {
+        const html = "<!doctype html><html><body><script src=\"/_nuxt/ChunkData/example.js\"></script></body></html>";
+        const expectedUrl = "https://www.example.com/_nuxt/ChunkData/example.js";
+        let fetchCount = 0;
+
+        const scripts = await extractLinksDataScripts(html, {
+                baseUrl: "https://www.example.com/page",
+                fetchExternalScript: async (scriptUrl) => {
+                        fetchCount += 1;
+                        assert.equal(scriptUrl, expectedUrl);
+                        return {
+                                statusCode: 200,
+                                body: "window.__NUXT__ = { state: { data: 'ok' } };",
+                        };
+                },
+        });
+
+        assert.equal(fetchCount, 1, "expected one external fetch call");
+        assert.equal(scripts.length, 1, "expected fetched script to be returned");
+        assert.equal(
+                scripts[0].content,
+                "window.__NUXT__ = { state: { data: 'ok' } };",
+                "expected external script body to be preserved"
         );
 });
