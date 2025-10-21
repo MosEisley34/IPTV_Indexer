@@ -2080,21 +2080,161 @@ async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
         return performHttpsRequestThroughProxy(urlObject, proxyObject, requestHeaders);
 }
 
-function extractLinksDataScripts(html) {
+const MAX_EXTERNAL_SCRIPT_FETCHES = 10;
+
+async function extractLinksDataScripts(
+        html,
+        { baseUrl, fetchExternalScript } = {}
+) {
         const results = [];
-        const scriptRegex = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+        const scriptRegex = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
         let match;
         let index = 0;
+        const externalScripts = [];
+        const seenExternalUrls = new Set();
 
         while ((match = scriptRegex.exec(html)) !== null) {
-                const content = match[1];
+                const attributes = match[1] || "";
+                const content = match[2] || "";
+
                 if (hasLinkDataMarker(content)) {
                         results.push({ index, content });
+                        index += 1;
+                        continue;
                 }
+
+                const srcValue = extractAttributeValue(attributes, "src");
+
+                if (
+                        !srcValue ||
+                        typeof baseUrl !== "string" ||
+                        typeof fetchExternalScript !== "function"
+                ) {
+                        index += 1;
+                        continue;
+                }
+
+                if (!shouldFetchExternalScript(srcValue)) {
+                        index += 1;
+                        continue;
+                }
+
+                const resolvedUrl = resolveScriptUrl(srcValue, baseUrl);
+
+                if (!resolvedUrl || seenExternalUrls.has(resolvedUrl)) {
+                        index += 1;
+                        continue;
+                }
+
+                externalScripts.push({ index, url: resolvedUrl, originalSrc: srcValue });
+                seenExternalUrls.add(resolvedUrl);
                 index += 1;
         }
 
+        if (externalScripts.length === 0) {
+                return results;
+        }
+
+        if (externalScripts.length > MAX_EXTERNAL_SCRIPT_FETCHES) {
+                logWarn(
+                        `Detected ${externalScripts.length} external scripts with potential channel data. ` +
+                                `Only the first ${MAX_EXTERNAL_SCRIPT_FETCHES} will be inspected.`
+                );
+        }
+
+        const scriptsToFetch = externalScripts.slice(0, MAX_EXTERNAL_SCRIPT_FETCHES);
+
+        for (const scriptInfo of scriptsToFetch) {
+                try {
+                        logDebug(
+                                `Fetching external script ${scriptInfo.url} (discovered at index ${scriptInfo.index}).`
+                        );
+                        const response = await fetchExternalScript(scriptInfo.url);
+
+                        if (!response || response.statusCode !== 200) {
+                                logDebug(
+                                        `External script ${scriptInfo.url} returned status ${
+                                                response ? response.statusCode : "<no response>"
+                                        }.`
+                                );
+                                continue;
+                        }
+
+                        const body = response.body || "";
+
+                        if (!hasLinkDataMarker(body)) {
+                                logDebug(
+                                        `External script ${scriptInfo.url} did not contain recognizable channel markers.`
+                                );
+                                continue;
+                        }
+
+                        results.push({
+                                index: scriptInfo.index,
+                                content: body,
+                        });
+                } catch (error) {
+                        logDebug(
+                                `Failed to inspect external script ${scriptInfo.url}: ${error.message}`
+                        );
+                }
+        }
+
         return results;
+}
+
+function extractAttributeValue(attributes, attributeName) {
+        if (!attributes || typeof attributes !== "string") {
+                return null;
+        }
+
+        const regex = new RegExp(
+                `${attributeName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+                "i"
+        );
+        const match = attributes.match(regex);
+
+        if (!match) {
+                return null;
+        }
+
+        return match[1] ?? match[2] ?? match[3] ?? null;
+}
+
+function shouldFetchExternalScript(srcValue) {
+        if (typeof srcValue !== "string") {
+                return false;
+        }
+
+        const trimmed = srcValue.trim();
+
+        if (trimmed.length === 0) {
+                return false;
+        }
+
+        if (trimmed.startsWith("javascript:")) {
+                return false;
+        }
+
+        if (trimmed.startsWith("data:")) {
+                return false;
+        }
+
+        return true;
+}
+
+function resolveScriptUrl(srcValue, baseUrl) {
+        try {
+                const resolved = new URL(srcValue, baseUrl);
+                return resolved.href;
+        } catch (error) {
+                logDebug(
+                        `Could not resolve external script URL '${srcValue}' against base '${baseUrl}': ${
+                                error.message
+                        }`
+                );
+                return null;
+        }
 }
 
 function hasLinkDataMarker(scriptContent) {
@@ -2642,7 +2782,26 @@ async function extractAndExport(options) {
                                 continue;
                         }
 
-                        const scripts = extractLinksDataScripts(response.body);
+                        const scripts = await extractLinksDataScripts(response.body, {
+                                baseUrl: targetUrl,
+                                fetchExternalScript: async (scriptUrl) => {
+                                        const scriptHeaders = {
+                                                ...requestHeaders,
+                                                Accept:
+                                                        "application/javascript,text/javascript,*/*;q=0.8",
+                                                Referer: targetUrl,
+                                        };
+
+                                        const proxyUrlForScripts = proxyUrlToUse
+                                                ? proxyUrlToUse
+                                                : undefined;
+
+                                        return fetchWithOptionalProxy(scriptUrl, {
+                                                headers: scriptHeaders,
+                                                proxyUrl: proxyUrlForScripts,
+                                        });
+                                },
+                        });
                         logDebug(
                                 `Found ${scripts.length} scripts containing potential channel data markers.`
                         );
