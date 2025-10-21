@@ -2081,6 +2081,8 @@ async function fetchWithOptionalProxy(url, { headers = {}, proxyUrl } = {}) {
 }
 
 const MAX_EXTERNAL_SCRIPT_FETCHES = 10;
+const STREAM_URL_MARKER_REGEX =
+        /https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mpd|\/manifest(?:\.m3u8|\.mpd)?|\/master\.m3u8)/i;
 
 async function extractLinksDataScripts(
         html,
@@ -2264,7 +2266,10 @@ function hasLinkDataMarker(scriptContent) {
         return (
                 normalized.includes("linksdata") ||
                 normalized.includes("__nuxt__") ||
-                normalized.includes("acestream://")
+                normalized.includes("acestream://") ||
+                STREAM_URL_MARKER_REGEX.test(scriptContent) ||
+                normalized.includes("streamingurl") ||
+                normalized.includes("playbackurl")
         );
 }
 

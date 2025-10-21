@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tennis Channel Plus Live</title>
+</head>
+<body>
+    <script type="application/json" data-page="stream-block">
+        {
+            "page": {
+                "components": {
+                    "liveCarousel": {
+                        "items": [
+                            {
+                                "title": "Center Court",
+                                "streaming": {
+                                    "primary": {
+                                        "playbackUrl": "https://plus-live.tennischannel.example.com/live/center-court/master.m3u8?token=center"
+                                    },
+                                    "backup": [
+                                        {
+                                            "streamingUrl": "https://plus-live.tennischannel.example.com/live/center-court/manifest.mpd?token=center"
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "heading": "Second Court",
+                                "feeds": [
+                                    {
+                                        "sources": [
+                                            {
+                                                "url": "https://plus-live.tennischannel.example.com/live/second-court/master.m3u8?token=second"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

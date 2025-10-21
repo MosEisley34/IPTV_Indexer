@@ -96,6 +96,36 @@ test("extractLinksDataFromScript parses __NUXT_DATA__ JSON payloads", async () =
         );
 });
 
+test("extractLinksDataScripts detects inline JSON blocks with stream URLs", async () => {
+        const html = readFixture("tennischannel_pluslive_streamblock.html");
+        const scripts = await extractLinksDataScripts(html);
+
+        assert.equal(scripts.length, 1, "expected JSON stream block to be inspected");
+
+        const linksData = extractLinksDataFromScript(scripts[0].content);
+
+        assert.ok(linksData, "expected stream block JSON to produce channel data");
+        assert.ok(Array.isArray(linksData.links), "expected links array from stream block");
+        assert.equal(linksData.links.length, 3, "expected three streams extracted from stream block");
+        assert.deepEqual(
+                linksData.links,
+                [
+                        {
+                                name: "Center Court",
+                                url: "https://plus-live.tennischannel.example.com/live/center-court/master.m3u8?token=center",
+                        },
+                        {
+                                name: "Center Court",
+                                url: "https://plus-live.tennischannel.example.com/live/center-court/manifest.mpd?token=center",
+                        },
+                        {
+                                name: "Second Court",
+                                url: "https://plus-live.tennischannel.example.com/live/second-court/master.m3u8?token=second",
+                        },
+                ]
+        );
+});
+
 test("extractLinksDataScripts fetches external chunk scripts when needed", async () => {
         const html = "<!doctype html><html><body><script src=\"/_nuxt/ChunkData/example.js\"></script></body></html>";
         const expectedUrl = "https://www.example.com/_nuxt/ChunkData/example.js";
