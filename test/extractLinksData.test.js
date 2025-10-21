@@ -58,6 +58,36 @@ test("extractLinksDataFromScript parses window.__NUXT__ channel payloads", async
         );
 });
 
+test("extractLinksDataFromScript parses __NUXT_DATA__ JSON payloads", async () => {
+        const html = readFixture("tennischannel_pluslive_payload.html");
+        const scripts = await extractLinksDataScripts(html);
+
+        assert.equal(scripts.length, 1, "expected the Nuxt payload script to be detected");
+
+        const linksData = extractLinksDataFromScript(scripts[0].content);
+
+        assert.ok(linksData, "expected Nuxt payload JSON to produce channel data");
+        assert.ok(Array.isArray(linksData.links), "expected links array from Nuxt payload");
+        assert.equal(linksData.links.length, 3, "expected three channels extracted from Nuxt payload");
+        assert.deepEqual(
+                linksData.links,
+                [
+                        {
+                                name: "Tennis Channel Plus 1",
+                                url: "acestream://tennis-channel-plus-1",
+                        },
+                        {
+                                name: "Tennis Channel Plus 2",
+                                url: "acestream://tennis-channel-plus-2",
+                        },
+                        {
+                                name: "Tennis Channel Extra",
+                                url: "acestream://tennis-channel-extra",
+                        },
+                ]
+        );
+});
+
 test("extractLinksDataScripts fetches external chunk scripts when needed", async () => {
         const html = "<!doctype html><html><body><script src=\"/_nuxt/ChunkData/example.js\"></script></body></html>";
         const expectedUrl = "https://www.example.com/_nuxt/ChunkData/example.js";

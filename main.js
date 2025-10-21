@@ -2096,9 +2096,14 @@ async function extractLinksDataScripts(
         while ((match = scriptRegex.exec(html)) !== null) {
                 const attributes = match[1] || "";
                 const content = match[2] || "";
+                const isNuxtDataPayload = isNuxtDataPayloadScript(attributes);
 
-                if (hasLinkDataMarker(content)) {
-                        results.push({ index, content });
+                if (hasLinkDataMarker(content) || isNuxtDataPayload) {
+                        const normalizedContent = isNuxtDataPayload ? content.trim() : content;
+
+                        if (normalizedContent.length > 0) {
+                                results.push({ index, content: normalizedContent });
+                        }
                         index += 1;
                         continue;
                 }
@@ -2237,12 +2242,26 @@ function resolveScriptUrl(srcValue, baseUrl) {
         }
 }
 
+function isNuxtDataPayloadScript(attributes) {
+        if (typeof attributes !== "string" || attributes.length === 0) {
+                return false;
+        }
+
+        return /\bid\s*=\s*["']__nuxt_data__["']/i.test(attributes);
+}
+
 function hasLinkDataMarker(scriptContent) {
         if (typeof scriptContent !== "string" || scriptContent.length === 0) {
                 return false;
         }
 
-        return scriptContent.includes("linksData") || scriptContent.includes("__NUXT__");
+        const normalized = scriptContent.toLowerCase();
+
+        return (
+                normalized.includes("linksdata") ||
+                normalized.includes("__nuxt__") ||
+                normalized.includes("acestream://")
+        );
 }
 
 function extractLinksDataFromScript(scriptContent) {
@@ -2282,11 +2301,7 @@ function parseLegacyLinksData(scriptContent) {
 }
 
 function parseNuxtLinksData(scriptContent) {
-        if (!scriptContent.includes("__NUXT__")) {
-                return null;
-        }
-
-        const nuxtState = extractNuxtState(scriptContent);
+        const nuxtState = extractNuxtState(scriptContent) || parseNuxtPayloadScript(scriptContent);
 
         if (!nuxtState) {
                 return null;
@@ -2339,6 +2354,37 @@ function extractNuxtState(scriptContent) {
         }
 
         return sandboxWindow.__NUXT__ ?? sandbox.__NUXT__ ?? null;
+}
+
+function parseNuxtPayloadScript(scriptContent) {
+        if (typeof scriptContent !== "string") {
+                return null;
+        }
+
+        const trimmed = scriptContent.trim();
+
+        if (trimmed.length === 0) {
+                return null;
+        }
+
+        const startsWithJsonToken = trimmed.startsWith("{") || trimmed.startsWith("[");
+
+        if (!startsWithJsonToken) {
+                return null;
+        }
+
+        try {
+                const parsed = JSON.parse(trimmed);
+
+                if (!parsed || (typeof parsed !== "object" && !Array.isArray(parsed))) {
+                        return null;
+                }
+
+                return parsed;
+        } catch (error) {
+                logDebug("Failed to parse potential Nuxt payload script:", error.message);
+                return null;
+        }
 }
 
 function extractObjectLiteralAfterAssignment(scriptContent, assignmentRegex) {
