@@ -21,3 +21,17 @@ test("discoverAdditionalUrls decodes escaped JSON url entries", () => {
 
         assert.deepEqual(urls, ["https://bar.example.com/stream.m3u8"]);
 });
+
+test("discoverAdditionalUrls trims encoded trailing attribute noise", () => {
+        const html =
+                '<a data-url="/en-us/page/pluslive">Live</a>' +
+                '<a href="/en-us/page/mps?method=mvpd%22%3EProfile">Profile</a>';
+        const urls = discoverAdditionalUrls(html, {
+                baseUrl: "https://www.tennischannel.com/en-us/page/pluslive",
+        });
+
+        assert.deepEqual(urls, [
+                "https://www.tennischannel.com/en-us/page/pluslive",
+                "https://www.tennischannel.com/en-us/page/mps?method=mvpd",
+        ]);
+});

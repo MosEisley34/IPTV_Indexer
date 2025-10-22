@@ -3231,6 +3231,77 @@ function decodeEscapedLinkValue(value) {
         return result.trim();
 }
 
+function sanitizeDiscoveredUrlCandidate(value) {
+        const decoded = decodeEscapedLinkValue(value);
+
+        if (!decoded) {
+                return "";
+        }
+
+        let sanitized = decoded
+                .replace(/\u0026/gi, "&")
+                .replace(/&amp;/gi, "&")
+                .replace(/&#38;/g, "&")
+                .replace(/&#x26;/gi, "&")
+                .replace(/&#x2f;/gi, "/")
+                .replace(/&#47;/g, "/")
+                .trim();
+
+        sanitized = sanitized.replace(/["'<>].*$/, "");
+        sanitized = sanitized.replace(/%(?:22|27|3C|3E).*$/gi, "");
+        sanitized = sanitized.replace(/["'<>]+$/g, "");
+        sanitized = sanitized.replace(/(?:%22|%27|%3C|%3E)+$/gi, "");
+
+        sanitized = sanitized.trim();
+
+        return sanitized;
+}
+
+function normalizeDiscoveredAbsoluteUrl(url) {
+        if (typeof url !== "string") {
+                return "";
+        }
+
+        let normalized = url.trim();
+
+        if (!normalized) {
+                return "";
+        }
+
+        normalized = normalized.replace(/["'<>]+$/g, "");
+        normalized = normalized.replace(/(?:%22|%27|%3C|%3E)+$/gi, "");
+
+        normalized = normalized.trim();
+
+        if (!normalized) {
+                return "";
+        }
+
+        try {
+                // Ensure the cleaned URL is still valid.
+                return new URL(normalized).href;
+        } catch (error) {
+                return "";
+        }
+}
+
+function emitAuthenticationStatus(session, hostname, status, detail) {
+        if (!session || session.loginStatusReported) {
+                return;
+        }
+
+        const normalizedStatus = typeof status === "string" && status.trim().length > 0
+                ? status.trim().toUpperCase()
+                : "UNKNOWN";
+        const suffix = detail ? ` (${detail})` : "";
+
+        console.log(
+                `[Login] Authentication status for ${hostname}: ${normalizedStatus}${suffix}.`
+        );
+
+        session.loginStatusReported = true;
+}
+
 function sanitizeRawString(value) {
         const decoded = decodeEscapedLinkValue(value);
 
@@ -3732,7 +3803,7 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
-                const decodedCandidate = decodeEscapedLinkValue(rawCandidate);
+                const decodedCandidate = sanitizeDiscoveredUrlCandidate(rawCandidate);
 
                 if (!decodedCandidate) {
                         continue;
@@ -3749,6 +3820,12 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                 try {
                         resolved = new URL(trimmed, base).href;
                 } catch (error) {
+                        continue;
+                }
+
+                resolved = normalizeDiscoveredAbsoluteUrl(resolved);
+
+                if (!resolved) {
                         continue;
                 }
 
@@ -3793,7 +3870,7 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
-                const decodedCandidate = decodeEscapedLinkValue(rawCandidate);
+                const decodedCandidate = sanitizeDiscoveredUrlCandidate(rawCandidate);
 
                 if (!decodedCandidate) {
                         continue;
@@ -3804,6 +3881,12 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                 try {
                         resolved = new URL(decodedCandidate, base).href;
                 } catch (error) {
+                        continue;
+                }
+
+                resolved = normalizeDiscoveredAbsoluteUrl(resolved);
+
+                if (!resolved) {
                         continue;
                 }
 
@@ -4076,6 +4159,7 @@ async function extractAndExport(options) {
                         cookieJar,
                         loginAttempted: false,
                         loginSuccessful: false,
+                        loginStatusReported: false,
                 };
 
                 sessionCache.set(hostKey, session);
@@ -4148,6 +4232,12 @@ async function extractAndExport(options) {
                                         console.warn(
                                                 `[Login] Skipping authentication for ${loginInfo.url} because no login payload was provided.`
                                         );
+                                        emitAuthenticationStatus(
+                                                session,
+                                                urlObject.hostname,
+                                                "SKIPPED",
+                                                "missing payload"
+                                        );
                                 } else {
                                         console.log(`[Login] Authenticating via ${loginInfo.url}`);
                                         const payloadKeys = Object.keys(loginInfo.payload || {});
@@ -4193,6 +4283,11 @@ async function extractAndExport(options) {
                                                                 `[Login] Authentication successful (status ${loginResponse.statusCode}).`
                                                         );
                                                         session.loginSuccessful = true;
+                                                        emitAuthenticationStatus(
+                                                                session,
+                                                                urlObject.hostname,
+                                                                "SUCCESS"
+                                                        );
                                                         const cookieHeader = session.cookieJar.getCookieHeader();
                                                         if (cookieHeader) {
                                                                 logDebug(
@@ -4202,6 +4297,12 @@ async function extractAndExport(options) {
                                                 } else {
                                                         console.warn(
                                                                 `[Login] Authentication endpoint returned status ${loginResponse.statusCode}.`
+                                                        );
+                                                        emitAuthenticationStatus(
+                                                                session,
+                                                                urlObject.hostname,
+                                                                "FAILED",
+                                                                `status ${loginResponse.statusCode}`
                                                         );
                                                 }
                                         } catch (error) {
@@ -4243,6 +4344,12 @@ async function extractAndExport(options) {
                                                                                 `[Login] Authentication successful after retry (status ${fallbackResponse.statusCode}).`
                                                                         );
                                                                         session.loginSuccessful = true;
+                                                                        emitAuthenticationStatus(
+                                                                                session,
+                                                                                urlObject.hostname,
+                                                                                "SUCCESS",
+                                                                                "after retry"
+                                                                        );
                                                                         const cookieHeader = session.cookieJar.getCookieHeader();
                                                                         if (cookieHeader) {
                                                                                 logDebug(
@@ -4252,6 +4359,12 @@ async function extractAndExport(options) {
                                                                 } else {
                                                                         console.warn(
                                                                                 `[Login] Authentication endpoint returned status ${fallbackResponse.statusCode} after retry.`
+                                                                        );
+                                                                        emitAuthenticationStatus(
+                                                                                session,
+                                                                                urlObject.hostname,
+                                                                                "FAILED",
+                                                                                `status ${fallbackResponse.statusCode} after retry`
                                                                         );
                                                                 }
                                                         } catch (fallbackError) {
@@ -4263,6 +4376,12 @@ async function extractAndExport(options) {
                                                                                 fallbackError.stack || fallbackError.message
                                                                         }`
                                                                 );
+                                                                emitAuthenticationStatus(
+                                                                        session,
+                                                                        urlObject.hostname,
+                                                                        "FAILED",
+                                                                        fallbackError.message
+                                                                );
                                                         }
                                                 } else {
                                                         console.error(`[Login] Authentication failed: ${error.message}`);
@@ -4270,6 +4389,12 @@ async function extractAndExport(options) {
                                                                 `[Login] Detailed authentication error: ${
                                                                         error.stack || error.message
                                                                 }`
+                                                        );
+                                                        emitAuthenticationStatus(
+                                                                session,
+                                                                urlObject.hostname,
+                                                                "FAILED",
+                                                                error.message
                                                         );
                                                 }
                                         }
