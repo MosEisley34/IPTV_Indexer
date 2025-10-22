@@ -2745,6 +2745,8 @@ async function fetchWithOptionalProxy(
 const MAX_EXTERNAL_SCRIPT_FETCHES = 10;
 const STREAM_URL_MARKER_REGEX =
         /https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mpd|\/manifest(?:\.m3u8|\.mpd)?|\/master\.m3u8)/i;
+const MAX_DISCOVERED_PER_PAGE = 10;
+const MAX_TOTAL_DISCOVERED_URLS = 50;
 
 async function extractLinksDataScripts(
         html,
@@ -2933,6 +2935,115 @@ function hasLinkDataMarker(scriptContent) {
                 normalized.includes("streamingurl") ||
                 normalized.includes("playbackurl")
         );
+}
+
+function sanitizeRawString(value) {
+        if (typeof value !== "string") {
+                return "";
+        }
+
+        return value
+                .replace(/\\u0026/gi, "&")
+                .replace(/&amp;/gi, "&")
+                .replace(/\\\//g, "/")
+                .replace(/\s+/g, " ")
+                .trim();
+}
+
+function normalizeStreamUrl(rawUrl) {
+        if (typeof rawUrl !== "string") {
+                return null;
+        }
+
+        let normalized = sanitizeRawString(rawUrl)
+                .replace(/^"+|"+$/g, "")
+                .replace(/^'+|'+$/g, "")
+                .replace(/[),;]+$/g, "")
+                .replace(/[\])}]+$/g, "");
+
+        if (!/^https?:\/\//i.test(normalized)) {
+                return null;
+        }
+
+        if (normalized.toLowerCase().startsWith("acestream://")) {
+                return null;
+        }
+
+        return normalized;
+}
+
+function isSupportedStreamUrl(url) {
+        if (typeof url !== "string") {
+                return false;
+        }
+
+        const lower = url.toLowerCase();
+
+        if (!/^https?:\/\//.test(url)) {
+                return false;
+        }
+
+        if (lower.includes("acestream://")) {
+                return false;
+        }
+
+        if (/(?:\.m3u8|\.mpd)/.test(lower)) {
+                return true;
+        }
+
+        if (/\.ism\/manifest/.test(lower)) {
+                return true;
+        }
+
+        if (/\/manifest\.(?:m3u8|mpd)/.test(lower)) {
+                return true;
+        }
+
+        if (/(?:format|type|protocol)=(?:hls|dash|m3u8|mpd)/.test(lower)) {
+                return true;
+        }
+
+        if (/mime(?:type|)=application%2fx-mpegurl/.test(lower)) {
+                return true;
+        }
+
+        return false;
+}
+
+function collectStreamUrlsFromString(rawValue) {
+        if (typeof rawValue !== "string") {
+                return [];
+        }
+
+        const sanitized = sanitizeRawString(rawValue);
+
+        if (sanitized.length === 0) {
+                return [];
+        }
+
+        const matches = [];
+        const regex = /https?:\/\/[^\s"'<>\\)]+/gi;
+        let match;
+
+        while ((match = regex.exec(sanitized)) !== null) {
+                const candidate = normalizeStreamUrl(match[0]);
+
+                if (candidate && isSupportedStreamUrl(candidate)) {
+                        matches.push(candidate);
+                }
+        }
+
+        if (matches.length > 0) {
+                return matches;
+        }
+
+        const fallback = normalizeStreamUrl(sanitized);
+
+        if (fallback && isSupportedStreamUrl(fallback)) {
+                return [fallback];
+        }
+
+        return [];
 }
 
 function extractLinksDataFromScript(scriptContent) {
@@ -3128,115 +3239,6 @@ function extractLinksFromNuxtState(nuxtState) {
         const seenUrls = new Set();
         const visited = new WeakSet();
 
-        function sanitizeRawString(value) {
-                if (typeof value !== "string") {
-                        return "";
-                }
-
-                return value
-                        .replace(/\\u0026/gi, "&")
-                        .replace(/&amp;/gi, "&")
-                        .replace(/\\\//g, "/")
-                        .replace(/\s+/g, " ")
-                        .trim();
-        }
-
-        function normalizeStreamUrl(rawUrl) {
-                if (typeof rawUrl !== "string") {
-                        return null;
-                }
-
-                let normalized = sanitizeRawString(rawUrl)
-                        .replace(/^"+|"+$/g, "")
-                        .replace(/^'+|'+$/g, "")
-                        .replace(/[),;]+$/g, "")
-                        .replace(/[\])}]+$/g, "");
-
-                if (!/^https?:\/\//i.test(normalized)) {
-                        return null;
-                }
-
-                if (normalized.toLowerCase().startsWith("acestream://")) {
-                        return null;
-                }
-
-                return normalized;
-        }
-
-        function isSupportedStreamUrl(url) {
-                if (typeof url !== "string") {
-                        return false;
-                }
-
-                const lower = url.toLowerCase();
-
-                if (!/^https?:\/\//.test(url)) {
-                        return false;
-                }
-
-                if (lower.includes("acestream://")) {
-                        return false;
-                }
-
-                if (/(?:\.m3u8|\.mpd)/.test(lower)) {
-                        return true;
-                }
-
-                if (/\.ism\/manifest/.test(lower)) {
-                        return true;
-                }
-
-                if (/\/manifest\.(?:m3u8|mpd)/.test(lower)) {
-                        return true;
-                }
-
-                if (/(?:format|type|protocol)=(?:hls|dash|m3u8|mpd)/.test(lower)) {
-                        return true;
-                }
-
-                if (/mime(?:type|)=application%2fx-mpegurl/.test(lower)) {
-                        return true;
-                }
-
-                return false;
-        }
-
-        function collectStreamUrlsFromString(rawValue) {
-                if (typeof rawValue !== "string") {
-                        return [];
-                }
-
-                const sanitized = sanitizeRawString(rawValue);
-
-                if (sanitized.length === 0) {
-                        return [];
-                }
-
-                const matches = [];
-                const regex = /https?:\/\/[^\s"'<>\\)]+/gi;
-                let match;
-
-                while ((match = regex.exec(sanitized)) !== null) {
-                        const candidate = normalizeStreamUrl(match[0]);
-
-                        if (candidate && isSupportedStreamUrl(candidate)) {
-                                matches.push(candidate);
-                        }
-                }
-
-                if (matches.length > 0) {
-                        return matches;
-                }
-
-                const fallback = normalizeStreamUrl(sanitized);
-
-                if (fallback && isSupportedStreamUrl(fallback)) {
-                        return [fallback];
-                }
-
-                return [];
-        }
-
         function findNameInObject(object) {
                 if (!object || typeof object !== "object") {
                         return null;
@@ -3350,6 +3352,169 @@ function extractLinksFromNuxtState(nuxtState) {
         }
 
         traverse(nuxtState, []);
+
+        return results;
+}
+
+function extractStreamUrlsFromHtml(html) {
+        if (typeof html !== "string" || html.length === 0) {
+                return [];
+        }
+
+        const discovered = new Set();
+        const attributeRegex =
+                /\b(?:src|data-src|data-hls|data-stream-url|data-url|data-href|data-path|data-link)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^"'\s>]+))/gi;
+        let match;
+
+        while ((match = attributeRegex.exec(html)) !== null) {
+                const candidate = match[1] || match[2] || match[3] || "";
+
+                if (!candidate) {
+                        continue;
+                }
+
+                for (const url of collectStreamUrlsFromString(candidate)) {
+                        discovered.add(url);
+                }
+        }
+
+        for (const url of collectStreamUrlsFromString(html)) {
+                discovered.add(url);
+        }
+
+        return Array.from(discovered);
+}
+
+function deriveNameFromStreamUrl(url) {
+        try {
+                const parsed = new URL(url);
+                const segments = parsed.pathname.split("/").filter(Boolean);
+                const lastSegment = segments[segments.length - 1] || parsed.hostname || "";
+                const withoutExtension = lastSegment.replace(/\.(?:m3u8|mpd|ism)/i, "");
+                const decoded = decodeURIComponent(withoutExtension).replace(/[-_]+/g, " ").trim();
+
+                if (decoded.length === 0) {
+                        return parsed.hostname || "Discovered Stream";
+                }
+
+                return decoded
+                        .split(" ")
+                        .filter(Boolean)
+                        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+                        .join(" ");
+        } catch (error) {
+                return "Discovered Stream";
+        }
+}
+
+function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = {}) {
+        if (typeof html !== "string" || html.length === 0) {
+                return [];
+        }
+
+        let base;
+
+        try {
+                base = new URL(baseUrl);
+        } catch (error) {
+                return [];
+        }
+
+        const results = [];
+        const seen = new Set();
+        const attributeRegex =
+                /\b(?:href|data-url|data-href|data-link|data-path|data-target-url|data-permalink)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^"'\s>]+))/gi;
+        let match;
+
+        while ((match = attributeRegex.exec(html)) !== null) {
+                if (results.length >= maxUrls) {
+                        break;
+                }
+
+                const rawCandidate = match[1] || match[2] || match[3] || "";
+
+                if (!rawCandidate) {
+                        continue;
+                }
+
+                const trimmed = rawCandidate.trim();
+
+                if (!trimmed || trimmed.startsWith("#") || /^javascript:/i.test(trimmed)) {
+                        continue;
+                }
+
+                let resolved;
+
+                try {
+                        resolved = new URL(trimmed, base).href;
+                } catch (error) {
+                        continue;
+                }
+
+                if (!/^https?:\/\//i.test(resolved)) {
+                        continue;
+                }
+
+                if (new URL(resolved).hostname !== base.hostname) {
+                        continue;
+                }
+
+                if (existingUrls && existingUrls.has(resolved)) {
+                        continue;
+                }
+
+                if (seen.has(resolved)) {
+                        continue;
+                }
+
+                seen.add(resolved);
+                results.push(resolved);
+        }
+
+        if (results.length >= maxUrls) {
+                return results;
+        }
+
+        const jsonRegex = /"(?:url|href|permalink|path)"\s*:\s*"([^"]+)"/gi;
+
+        while ((match = jsonRegex.exec(html)) !== null) {
+                if (results.length >= maxUrls) {
+                        break;
+                }
+
+                const rawCandidate = match[1] || "";
+
+                if (!rawCandidate) {
+                        continue;
+                }
+
+                let resolved;
+
+                try {
+                        resolved = new URL(rawCandidate, base).href;
+                } catch (error) {
+                        continue;
+                }
+
+                if (!/^https?:\/\//i.test(resolved)) {
+                        continue;
+                }
+
+                if (new URL(resolved).hostname !== base.hostname) {
+                        continue;
+                }
+
+                if (existingUrls && existingUrls.has(resolved)) {
+                        continue;
+                }
+
+                if (seen.has(resolved)) {
+                        continue;
+                }
+
+                seen.add(resolved);
+                results.push(resolved);
+        }
 
         return results;
 }
@@ -3564,8 +3729,10 @@ async function extractAndExport(options) {
         const aggregatedLinks = [];
         const perUrlStats = [];
         let proxyDisabledForSession = false;
+        let totalDiscoveredUrls = 0;
 
-        for (const targetUrl of urlsToProcess) {
+        for (let urlIndex = 0; urlIndex < urlsToProcess.length; urlIndex += 1) {
+                const targetUrl = urlsToProcess[urlIndex];
                 console.log(`\nProcessing: ${targetUrl}`);
 
                 try {
@@ -3847,92 +4014,155 @@ async function extractAndExport(options) {
                                 `Found ${scripts.length} scripts containing potential channel data markers.`
                         );
 
-                        if (scripts.length === 0) {
-                                console.log(
-                                        "Could not find any scripts containing recognizable channel data markers for this URL."
-                                );
-                                continue;
-                        }
+
 
                         let exportedForUrl = 0;
 
-                        for (const script of scripts) {
-                                console.log(`Script found at index ${script.index}.`);
-                                logDebug(
-                                        `Analyzing script index ${script.index} (length: ${
-                                                script.content.length
-                                        } characters).`
+                        if (scripts.length === 0) {
+                                console.log(
+                                        "Could not find any scripts containing recognizable channel data markers for this URL. Running fallback discovery strategies."
                                 );
-                                try {
-                                        const linksData = extractLinksDataFromScript(script.content);
-
-                                        if (!linksData || !Array.isArray(linksData.links)) {
-                                                logDebug(
-                                                        `Script index ${script.index} did not return valid channel data.`
-                                                );
-                                                continue;
-                                        }
-
-                                        console.log(
-                                                "Original data contains:",
-                                                linksData.links.length,
-                                                "links"
-                                        );
+                        } else {
+                                for (const script of scripts) {
+                                        console.log(`Script found at index ${script.index}.`);
                                         logDebug(
-                                                `Sample of parsed channel data keys: ${Object.keys(linksData).join(', ')}`
+                                                `Analyzing script index ${script.index} (length: ${
+                                                        script.content.length
+                                                } characters).`
                                         );
+                                        try {
+                                                const linksData = extractLinksDataFromScript(script.content);
 
-                                        const cleanedLinks = linksData.links
-                                                .filter((link) => {
-                                                        if (!link || typeof link.url !== "string") {
-                                                                logDebug(
-                                                                        `Discarding invalid link entry from script index ${script.index}.`
-                                                                );
-                                                                return false;
-                                                        }
+                                                if (!linksData || !Array.isArray(linksData.links)) {
+                                                        logDebug(
+                                                                `Script index ${script.index} did not return valid channel data.`
+                                                        );
+                                                        continue;
+                                                }
 
-                                                        const trimmedUrl = link.url.trim();
-
-                                                        if (!/^https?:\/\//i.test(trimmedUrl)) {
-                                                                logDebug(
-                                                                        `Discarding non-HTTP stream URL from script index ${script.index}.`
-                                                                );
-                                                                return false;
-                                                        }
-
-                                                        if (/^acestream:\/\//i.test(trimmedUrl)) {
-                                                                logDebug(
-                                                                        `Discarding AceStream URL from script index ${script.index}.`
-                                                                );
-                                                                return false;
-                                                        }
-
-                                                        return true;
-                                                })
-                                                .map((link) => ({
-                                                        name: link.name || "Channel",
-                                                        url: link.url.trim().replace(/\\u0026/gi, "&").replace(/&amp;/gi, "&"),
-                                                }));
-
-                                        if (cleanedLinks.length === 0) {
-                                                logDebug(
-                                                        `All links discarded after cleanup for script index ${script.index}.`
+                                                console.log(
+                                                        "Original data contains:",
+                                                        linksData.links.length,
+                                                        "links"
                                                 );
-                                                continue;
-                                        }
+                                                logDebug(
+                                                        `Sample of parsed channel data keys: ${Object.keys(linksData).join(', ')}`
+                                                );
 
-                                        aggregatedLinks.push(...cleanedLinks);
-                                        exportedForUrl += cleanedLinks.length;
-                                        logDebug(
-                                                `Exported ${cleanedLinks.length} links from script index ${script.index}.`
-                                        );
-                                } catch (parseError) {
-                                        console.error(
-                                                "Error parsing the channel data structure:",
-                                                parseError
-                                        );
-                                        logDebug(`Problematic script content: ${script.content.slice(0, 500)}...`);
+                                                const cleanedLinks = linksData.links
+                                                        .filter((link) => {
+                                                                if (!link || typeof link.url !== "string") {
+                                                                        logDebug(
+                                                                                `Discarding invalid link entry from script index ${script.index}.`
+                                                                        );
+                                                                        return false;
+                                                                }
+
+                                                                const trimmedUrl = link.url.trim();
+
+                                                                if (!/^https?:\/\//i.test(trimmedUrl)) {
+                                                                        logDebug(
+                                                                                `Discarding non-HTTP stream URL from script index ${script.index}.`
+                                                                        );
+                                                                        return false;
+                                                                }
+
+                                                                if (!isSupportedStreamUrl(trimmedUrl)) {
+                                                                        logDebug(
+                                                                                `Discarding unsupported stream URL from script index ${script.index}: ${trimmedUrl}`
+                                                                        );
+                                                                        return false;
+                                                                }
+
+                                                                return true;
+                                                        })
+                                                        .map((link) => ({
+                                                                name: link.name || "Channel",
+                                                                url: link.url.trim().replace(/\\u0026/gi, "&").replace(/&amp;/gi, "&"),
+                                                        }));
+
+                                                if (cleanedLinks.length === 0) {
+                                                        logDebug(
+                                                                `All links discarded after cleanup for script index ${script.index}.`
+                                                        );
+                                                        continue;
+                                                }
+
+                                                aggregatedLinks.push(...cleanedLinks);
+                                                exportedForUrl += cleanedLinks.length;
+                                                logDebug(
+                                                        `Exported ${cleanedLinks.length} links from script index ${script.index}.`
+                                                );
+                                        } catch (parseError) {
+                                                console.error(
+                                                        "Error parsing the channel data structure:",
+                                                        parseError
+                                                );
+                                                logDebug(`Problematic script content: ${script.content.slice(0, 500)}...`);
+                                        }
                                 }
+                        }
+
+                        const directStreamUrls = extractStreamUrlsFromHtml(response.body);
+
+                        if (directStreamUrls.length > 0) {
+                                console.log(
+                                        `Discovered ${directStreamUrls.length} direct stream URL(s) within page markup.`
+                                );
+                                logDebug(
+                                        `Direct stream URLs discovered: ${directStreamUrls.join(', ')}`
+                                );
+                                const directLinks = directStreamUrls.map((streamUrl) => ({
+                                        name: deriveNameFromStreamUrl(streamUrl),
+                                        url: streamUrl,
+                                }));
+                                aggregatedLinks.push(...directLinks);
+                                exportedForUrl += directLinks.length;
+                        }
+
+                        if (totalDiscoveredUrls < MAX_TOTAL_DISCOVERED_URLS) {
+                                const remainingCapacity = Math.max(
+                                        0,
+                                        MAX_TOTAL_DISCOVERED_URLS - totalDiscoveredUrls
+                                );
+
+                                if (remainingCapacity > 0) {
+                                        const additionalUrls = discoverAdditionalUrls(response.body, {
+                                                baseUrl: targetUrl,
+                                                maxUrls: Math.min(MAX_DISCOVERED_PER_PAGE, remainingCapacity),
+                                                existingUrls: urlSet,
+                                        });
+
+                                        if (additionalUrls.length > 0) {
+                                                console.log(
+                                                        `[Discovery] Queued ${additionalUrls.length} additional URL(s) found on the page.`
+                                                );
+
+                                                for (const discoveredUrl of additionalUrls) {
+                                                        if (urlSet.has(discoveredUrl)) {
+                                                                continue;
+                                                        }
+
+                                                        urlSet.add(discoveredUrl);
+                                                        urlsToProcess.push(discoveredUrl);
+                                                        totalDiscoveredUrls += 1;
+                                                        logDebug(
+                                                                `[Discovery] Added ${discoveredUrl} to the processing queue.`
+                                                        );
+
+                                                        if (totalDiscoveredUrls >= MAX_TOTAL_DISCOVERED_URLS) {
+                                                                logWarn(
+                                                                        `[Discovery] Maximum total discovered URL limit (${MAX_TOTAL_DISCOVERED_URLS}) reached.`
+                                                                );
+                                                                break;
+                                                        }
+                                                }
+                                        }
+                                }
+                        } else {
+                                logVerbose(
+                                        `[Discovery] Maximum total discovered URL limit (${MAX_TOTAL_DISCOVERED_URLS}) already reached.`
+                                );
                         }
 
                         if (exportedForUrl > 0) {
@@ -3944,9 +4174,7 @@ async function extractAndExport(options) {
                                         `Accumulated exported links count is now ${aggregatedLinks.length}.`
                                 );
                         } else {
-                                console.log(
-                                        "No script containing channel data could be processed for this URL."
-                                );
+                                console.log("No stream links could be exported for this URL.");
                                 logVerbose(
                                         `No exportable data found for ${targetUrl}; continuing with next target if available.`
                                 );
