@@ -4,6 +4,7 @@ const vm = require("vm");
 const http = require("http");
 const https = require("https");
 const tls = require("tls");
+const zlib = require("zlib");
 const { execFile } = require("child_process");
 const readline = require("readline");
 const { Writable } = require("stream");
@@ -202,6 +203,150 @@ function mergeHeaders(...sources) {
         }
 
         return result;
+}
+
+function decodeResponseBody(buffer, headers) {
+        if (buffer === undefined || buffer === null) {
+                return "";
+        }
+
+        let workingBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+        const encodingHeader = getHeaderValue(headers, "Content-Encoding");
+
+        if (typeof encodingHeader === "string" && encodingHeader.trim().length > 0) {
+                const encodings = encodingHeader
+                        .split(",")
+                        .map((part) => part.trim().toLowerCase())
+                        .filter(Boolean)
+                        .reverse();
+
+                for (const encoding of encodings) {
+                        try {
+                                if (encoding === "gzip" || encoding === "x-gzip") {
+                                        workingBuffer = zlib.gunzipSync(workingBuffer);
+                                        continue;
+                                }
+
+                                if (encoding === "deflate" || encoding === "x-deflate") {
+                                        try {
+                                                workingBuffer = zlib.inflateSync(workingBuffer);
+                                        } catch (inflateError) {
+                                                workingBuffer = zlib.inflateRawSync(workingBuffer);
+                                        }
+                                        continue;
+                                }
+
+                                if (encoding === "br") {
+                                        if (typeof zlib.brotliDecompressSync === "function") {
+                                                workingBuffer = zlib.brotliDecompressSync(workingBuffer);
+                                        } else {
+                                                logDebug(
+                                                        "Received Brotli-encoded response but brotliDecompressSync is not available; returning undecoded body."
+                                                );
+                                                return workingBuffer.toString("utf8");
+                                        }
+                                        continue;
+                                }
+
+                                if (encoding === "identity") {
+                                        continue;
+                                }
+
+                                logDebug(
+                                        `Unsupported content-encoding '${encoding}'. Returning body without decoding.`
+                                );
+                                return workingBuffer.toString("utf8");
+                        } catch (error) {
+                                logDebug(
+                                        `Failed to decode response body for encoding '${encoding}': ${error.message}`
+                                );
+                                return workingBuffer.toString("utf8");
+                        }
+                }
+        }
+
+        return workingBuffer.toString("utf8");
+}
+
+const STATIC_ASSET_EXTENSIONS = new Set([
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "svg",
+        "webp",
+        "ico",
+        "bmp",
+        "css",
+        "scss",
+        "sass",
+        "less",
+        "js",
+        "mjs",
+        "cjs",
+        "ts",
+        "tsx",
+        "jsx",
+        "map",
+        "woff",
+        "woff2",
+        "ttf",
+        "otf",
+        "eot",
+]);
+
+function isLikelyStaticAssetUrl(url) {
+        if (typeof url !== "string" || url.length === 0) {
+                return false;
+        }
+
+        let parsed;
+
+        try {
+                parsed = new URL(url);
+        } catch (error) {
+                return false;
+        }
+
+        const pathname = parsed.pathname || "";
+
+        if (!pathname || pathname.endsWith("/")) {
+                return false;
+        }
+
+        const lastSegment = pathname.split("/").pop() || "";
+
+        if (!lastSegment) {
+                return false;
+        }
+
+        const sanitized = lastSegment.split(/[?#]/, 1)[0] || "";
+
+        if (!sanitized) {
+                return false;
+        }
+
+        if (/^favicon$/i.test(sanitized)) {
+                return true;
+        }
+
+        const dotIndex = sanitized.lastIndexOf(".");
+
+        if (dotIndex === -1) {
+                return false;
+        }
+
+        const extension = sanitized.slice(dotIndex + 1).toLowerCase();
+
+        if (!extension) {
+                return false;
+        }
+
+        if (extension === "m3u8" || extension === "mpd" || extension === "ism") {
+                return false;
+        }
+
+        return STATIC_ASSET_EXTENSIONS.has(extension);
 }
 
 function normalizeContentType(contentTypeHeader) {
@@ -630,6 +775,7 @@ module.exports = {
         extractLinksDataFromScript,
         discoverAdditionalUrls,
         collectStreamUrlsFromString,
+        decodeResponseBody,
 };
 
 function parseYamlScalar(rawValue) {
@@ -2563,7 +2709,7 @@ function performDirectRequest(urlObject, headers, method = "GET", body) {
                                                 resolve({
                                                         statusCode: response.statusCode || 0,
                                                         headers: response.headers,
-                                                        body: buffer.toString("utf8"),
+                                                        body: decodeResponseBody(buffer, response.headers),
                                                 });
                                         })
                                         .catch(reject);
@@ -2618,7 +2764,7 @@ function performHttpRequestThroughProxy(urlObject, proxyObject, headers, method 
                                                 resolve({
                                                         statusCode: response.statusCode || 0,
                                                         headers: response.headers,
-                                                        body: buffer.toString("utf8"),
+                                                        body: decodeResponseBody(buffer, response.headers),
                                                 });
                                         })
                                         .catch(reject);
@@ -2715,7 +2861,7 @@ function performHttpsRequestThroughProxy(urlObject, proxyObject, headers, method
                                         resolve({
                                                 statusCode,
                                                 headers: headersObject,
-                                                body: bodyBuffer.toString("utf8"),
+                                                body: decodeResponseBody(bodyBuffer, headersObject),
                                         });
                                 })
                                 .catch(reject)
@@ -3549,6 +3695,10 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
+                if (isLikelyStaticAssetUrl(resolved)) {
+                        continue;
+                }
+
                 if (seen.has(resolved)) {
                         continue;
                 }
@@ -3597,6 +3747,10 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                 }
 
                 if (existingUrls && existingUrls.has(resolved)) {
+                        continue;
+                }
+
+                if (isLikelyStaticAssetUrl(resolved)) {
                         continue;
                 }
 
