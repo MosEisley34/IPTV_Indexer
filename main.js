@@ -776,6 +776,7 @@ module.exports = {
         discoverAdditionalUrls,
         collectStreamUrlsFromString,
         decodeResponseBody,
+        explainNordVpnProxyFailure,
 };
 
 function parseYamlScalar(rawValue) {
@@ -1738,8 +1739,11 @@ function explainNordVpnProxyFailure(error, proxyUrl) {
         }
 
         const hostname = extractHostnameFromUrl(proxyUrl) || proxyUrl || "the configured proxy host";
+        const errorCode = typeof error.code === "string" ? error.code.toUpperCase() : "";
+        const errorMessage = typeof error.message === "string" ? error.message : "";
+        const normalizedMessage = errorMessage.toLowerCase();
 
-        if (error.code === "ENOTFOUND") {
+        if (errorCode === "ENOTFOUND") {
                 return (
                         `[NordVPN Proxy] DNS lookup failed for '${hostname}'. ` +
                         "Update your NordVPN proxy configuration with the exact hostname provided by NordVPN " +
@@ -1748,7 +1752,60 @@ function explainNordVpnProxyFailure(error, proxyUrl) {
                 );
         }
 
-        return null;
+        if (errorCode === "ECONNREFUSED") {
+                return (
+                        `[NordVPN Proxy] Connection to '${hostname}' was refused. ` +
+                        "Verify the NordVPN proxy hostname, port, and credentials or disable the proxy " +
+                        "integration if you only intend to rely on the CLI tunnel."
+                );
+        }
+
+        if (errorCode === "ECONNRESET" || normalizedMessage.includes("socket hang up")) {
+                return (
+                        `[NordVPN Proxy] The connection to '${hostname}' was closed unexpectedly. ` +
+                        "This often happens when the proxy rejects the credentials or becomes unstable. " +
+                        "Try again, update the proxy credentials, or disable the proxy integration to " +
+                        "use the CLI tunnel exclusively."
+                );
+        }
+
+        if (errorCode === "ETIMEDOUT" || errorCode === "ESOCKETTIMEDOUT") {
+                return (
+                        `[NordVPN Proxy] Timed out while connecting to '${hostname}'. ` +
+                        "The proxy may be overloaded or unreachable. Retry later, pick another NordVPN " +
+                        "proxy host, or disable the proxy integration."
+                );
+        }
+
+        if (errorCode === "EHOSTUNREACH" || errorCode === "ENETUNREACH") {
+                return (
+                        `[NordVPN Proxy] Unable to reach '${hostname}'. ` +
+                        "Ensure the container or host can access NordVPN's proxy network or disable the " +
+                        "proxy integration to rely on the CLI tunnel."
+                );
+        }
+
+        if (errorCode) {
+                return (
+                        `[NordVPN Proxy] Failed to reach '${hostname}' (${errorCode}). ` +
+                        "Check the NordVPN proxy settings or disable the proxy integration if you only need " +
+                        "the CLI tunnel."
+                );
+        }
+
+        if (errorMessage) {
+                return (
+                        `[NordVPN Proxy] Request through '${hostname}' failed: ${errorMessage}. ` +
+                        "Verify the proxy credentials or disable the proxy integration if you only intend to use " +
+                        "the CLI tunnel."
+                );
+        }
+
+        return (
+                `[NordVPN Proxy] Request through '${hostname}' failed. ` +
+                "Verify the NordVPN proxy configuration or disable the proxy integration if you only intend to " +
+                "use the CLI tunnel."
+        );
 }
 
 function parseCliArgs() {
