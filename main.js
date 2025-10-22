@@ -743,6 +743,26 @@ function buildLoginInfo({ urlObject, options, credential }) {
 
         let payload = null;
         let payloadSource = '';
+        let headers = null;
+        let headersSource = '';
+        let method = 'POST';
+        let methodSource = '';
+
+        if (isNonEmptyString(options.loginMethod)) {
+                method = options.loginMethod.trim().toUpperCase();
+                methodSource = 'global';
+        } else if (credential && isNonEmptyString(credential.method)) {
+                method = credential.method.trim().toUpperCase();
+                methodSource = 'credential';
+        }
+
+        if (isPlainObject(options.loginHeaders) && Object.keys(options.loginHeaders).length > 0) {
+                headers = mergeHeaders({}, options.loginHeaders);
+                headersSource = 'global';
+        } else if (credential && isPlainObject(credential.headers) && Object.keys(credential.headers).length > 0) {
+                headers = mergeHeaders({}, credential.headers);
+                headersSource = 'credential';
+        }
 
         if (options.loginPayload && typeof options.loginPayload === "object") {
                 payload = options.loginPayload;
@@ -783,9 +803,12 @@ function buildLoginInfo({ urlObject, options, credential }) {
 
         return {
                 url: resolvedLoginUrl,
-                method: "POST",
+                method,
                 payload,
                 payloadSource,
+                headers,
+                headersSource,
+                methodSource,
         };
 }
 
@@ -860,6 +883,9 @@ module.exports = {
         collectStreamUrlsFromString,
         decodeResponseBody,
         explainNordVpnProxyFailure,
+        __testables: {
+                buildLoginInfo,
+        },
 };
 
 function parseYamlScalar(rawValue) {
@@ -1949,9 +1975,13 @@ function parseCliArgs() {
                                 ? Number(process.env.NORDVPN_CLI_TIMEOUT_MS)
                                 : undefined,
                 loginUrl: process.env.LOGIN_URL || '',
+                loginMethod: process.env.LOGIN_METHOD || '',
                 loginUsername: process.env.LOGIN_USERNAME || '',
                 loginPassword: process.env.LOGIN_PASSWORD || '',
                 rawLoginPayload: process.env.LOGIN_PAYLOAD || '',
+                rawLoginHeaders:
+                        process.env.LOGIN_HEADERS ||
+                        '',
                 rawCookies:
                         process.env.SCRAPER_COOKIES ||
                         process.env.COOKIES ||
@@ -1964,6 +1994,8 @@ function parseCliArgs() {
                 credentialParseErrors: [],
                 loginPayload: null,
                 loginPayloadError: '',
+                loginHeaders: null,
+                loginHeadersError: '',
                 additionalHeaders: {},
                 headersParseErrors: [],
                 initialCookies: [],
@@ -1998,6 +2030,10 @@ function parseCliArgs() {
                                 config.loginUrl = scraperConfig.loginUrl;
                         }
 
+                        if (!config.loginMethod && typeof scraperConfig.loginMethod === 'string') {
+                                config.loginMethod = scraperConfig.loginMethod;
+                        }
+
                         if (!config.loginUsername && typeof scraperConfig.loginUsername === 'string') {
                                 config.loginUsername = scraperConfig.loginUsername;
                         }
@@ -2008,6 +2044,19 @@ function parseCliArgs() {
 
                         if (!config.rawLoginPayload && typeof scraperConfig.loginPayload === 'string') {
                                 config.rawLoginPayload = scraperConfig.loginPayload;
+                        }
+
+                        if (
+                                !config.loginHeaders &&
+                                scraperConfig.loginHeaders &&
+                                typeof scraperConfig.loginHeaders === 'object'
+                        ) {
+                                config.loginHeaders = scraperConfig.loginHeaders;
+                        } else if (
+                                !config.rawLoginHeaders &&
+                                typeof scraperConfig.loginHeaders === 'string'
+                        ) {
+                                config.rawLoginHeaders = scraperConfig.loginHeaders;
                         }
 
                         if (!config.rawCookies && typeof scraperConfig.cookies === 'string') {
@@ -2047,6 +2096,13 @@ function parseCliArgs() {
                                                 entry.password = rawEntry.password;
                                         }
 
+                                        if (typeof rawEntry.method === 'string') {
+                                                const normalizedMethod = rawEntry.method.trim().toUpperCase();
+                                                if (normalizedMethod) {
+                                                        entry.method = normalizedMethod;
+                                                }
+                                        }
+
                                         if (typeof rawEntry.cookies === 'string') {
                                                 entry.cookies = rawEntry.cookies;
                                         }
@@ -2064,6 +2120,37 @@ function parseCliArgs() {
                                                         }
                                                 } else if (isPlainObject(rawEntry.payload)) {
                                                         entry.payload = rawEntry.payload;
+                                                }
+                                        }
+
+                                        if (rawEntry.headers !== undefined) {
+                                                if (typeof rawEntry.headers === 'string') {
+                                                        try {
+                                                                const parsedHeaders = JSON.parse(rawEntry.headers);
+                                                                if (isPlainObject(parsedHeaders)) {
+                                                                        entry.headers = parsedHeaders;
+                                                                } else {
+                                                                        config.credentialParseErrors.push(
+                                                                                `Invalid headers payload for credentials entry '${
+                                                                                        entry.site || entry.loginUrl || 'unknown'
+                                                                                }': expected JSON object.`
+                                                                        );
+                                                                }
+                                                        } catch (error) {
+                                                                config.credentialParseErrors.push(
+                                                                        `Invalid JSON headers for credentials entry '${
+                                                                                entry.site || entry.loginUrl || 'unknown'
+                                                                        }': ${error.message}`
+                                                                );
+                                                        }
+                                                } else if (isPlainObject(rawEntry.headers)) {
+                                                        entry.headers = rawEntry.headers;
+                                                } else if (rawEntry.headers !== null && rawEntry.headers !== undefined) {
+                                                        config.credentialParseErrors.push(
+                                                                `Ignoring headers for credentials entry '${
+                                                                        entry.site || entry.loginUrl || 'unknown'
+                                                                }' because it was not a JSON object.`
+                                                        );
                                                 }
                                         }
 
@@ -2251,6 +2338,11 @@ function parseCliArgs() {
                         continue;
                 }
 
+                if (arg.startsWith('--login-method=')) {
+                        config.loginMethod = arg.slice('--login-method='.length);
+                        continue;
+                }
+
                 if (arg.startsWith('--login-username=')) {
                         config.loginUsername = arg.slice('--login-username='.length);
                         continue;
@@ -2263,6 +2355,11 @@ function parseCliArgs() {
 
                 if (arg.startsWith('--login-payload=')) {
                         config.rawLoginPayload = arg.slice('--login-payload='.length);
+                        continue;
+                }
+
+                if (arg.startsWith('--login-headers=')) {
+                        config.rawLoginHeaders = arg.slice('--login-headers='.length);
                         continue;
                 }
 
@@ -2354,6 +2451,12 @@ function parseCliArgs() {
                 config.loginUrl = '';
         }
 
+        if (typeof config.loginMethod === 'string') {
+                config.loginMethod = config.loginMethod.trim().toUpperCase();
+        } else {
+                config.loginMethod = '';
+        }
+
         if (typeof config.loginUsername === 'string') {
                 config.loginUsername = config.loginUsername.trim();
         } else {
@@ -2383,6 +2486,32 @@ function parseCliArgs() {
         } else {
                 config.loginPayload = null;
                 config.loginPayloadError = '';
+        }
+
+        if (typeof config.rawLoginHeaders === 'string') {
+                config.rawLoginHeaders = config.rawLoginHeaders.trim();
+        } else {
+                config.rawLoginHeaders = '';
+        }
+
+        if (config.rawLoginHeaders) {
+                try {
+                        const parsedHeaders = JSON.parse(config.rawLoginHeaders);
+
+                        if (isPlainObject(parsedHeaders)) {
+                                config.loginHeaders = parsedHeaders;
+                                config.loginHeadersError = '';
+                        } else {
+                                config.loginHeaders = null;
+                                config.loginHeadersError = 'Login headers JSON must be an object.';
+                        }
+                } catch (error) {
+                        config.loginHeaders = null;
+                        config.loginHeadersError = error.message;
+                }
+        } else if (!isPlainObject(config.loginHeaders)) {
+                config.loginHeaders = null;
+                config.loginHeadersError = '';
         }
 
         if (typeof config.rawHeaders !== 'string') {
@@ -2444,9 +2573,11 @@ function logHelp() {
                 `  --nordvpn-cli=<server>  Connect via CLI to the specified server.\n` +
                 `  --nordvpn-cli-timeout=<ms> Max time for the CLI to connect (default 60000 ms).\n` +
                 `  --login-url=<URL>        Login endpoint to call before scraping.\n` +
+                `  --login-method=<verb>    HTTP method to use for the login request (default POST).\n` +
                 `  --login-username=<user>  Username for the login payload.\n` +
                 `  --login-password=<pass>  Password for the login payload.\n` +
                 `  --login-payload=<json>   Raw JSON body to send to the login endpoint.\n` +
+                `  --login-headers=<json>   JSON object with headers for the login request.\n` +
                 `  --cookies="a=b; c=d"     Semicolon-separated cookies to include with every request.\n` +
                 `  --headers="Key: Value"  Additional headers separated by semicolons or new lines.\n` +
                 `  --test-nordvpn          Run a connectivity test for the configured NordVPN workflow and exit.\n` +
@@ -2459,9 +2590,11 @@ function logHelp() {
                 `  OUTPUT_FILE             Set the output file.\n` +
                 `  LOG_LEVEL               Set the log verbosity (silent/error/warn/info/verbose/debug).\n` +
                 `  LOGIN_URL               Authentication endpoint to call before scraping.\n` +
+                `  LOGIN_METHOD            HTTP method for the authentication request.\n` +
                 `  LOGIN_USERNAME          Username for the login payload.\n` +
                 `  LOGIN_PASSWORD          Password for the login payload.\n` +
                 `  LOGIN_PAYLOAD           Raw JSON body to send to the login endpoint.\n` +
+                `  LOGIN_HEADERS           JSON object with headers for the login request.\n` +
                 `  SCRAPER_COOKIES         Semicolon-separated cookies for every request (alias: COOKIES).\n` +
                 `  SCRAPER_HEADERS         Additional headers (alias: HEADERS).\n` +
                 `  USE_NORDVPN=true        Enable the use of NordVPN.\n` +
@@ -2508,7 +2641,9 @@ function summarizeOptionsForLogs(options) {
                 nordVpnCliServer,
                 nordVpnCliTimeoutMs,
                 loginUrl,
+                loginMethod,
                 loginPayload,
+                loginHeaders,
                 initialCookies,
                 additionalHeaders,
                 savedCredentials,
@@ -2529,10 +2664,15 @@ function summarizeOptionsForLogs(options) {
                 nordVpnCliServer: nordVpnCliServer || null,
                 nordVpnCliTimeoutMs: nordVpnCliTimeoutMs || null,
                 loginUrl: loginUrl || null,
+                loginMethod: loginMethod || null,
                 loginPayloadKeys:
                         loginPayload && typeof loginPayload === 'object'
                                 ? Object.keys(loginPayload)
                                 : null,
+                loginHeaderCount:
+                        loginHeaders && typeof loginHeaders === 'object'
+                                ? Object.keys(loginHeaders).length
+                                : 0,
                 initialCookieCount: Array.isArray(initialCookies) ? initialCookies.length : 0,
                 additionalHeaderCount:
                         additionalHeaders && typeof additionalHeaders === 'object'
@@ -4178,6 +4318,12 @@ async function extractAndExport(options) {
                 return;
         }
 
+        if (options.loginHeadersError) {
+                console.error(`Invalid login headers JSON: ${options.loginHeadersError}`);
+                process.exitCode = 1;
+                return;
+        }
+
         const headerWarnings = Array.isArray(options.headersParseErrors)
                 ? options.headersParseErrors
                 : [];
@@ -4325,6 +4471,22 @@ async function extractAndExport(options) {
                                         );
                                 } else {
                                         console.log(`[Login] Authenticating via ${loginInfo.url}`);
+                                        const loginMethod = loginInfo.method || "POST";
+                                        if (loginInfo.methodSource) {
+                                                logDebug(
+                                                        `[Login] HTTP method for ${loginInfo.url} sourced from ${loginInfo.methodSource}.`);
+                                        }
+                                        if (loginInfo.headers && Object.keys(loginInfo.headers).length > 0) {
+                                                const headerKeys = Object.keys(loginInfo.headers);
+                                                logDebug(
+                                                        `[Login] Applying custom headers for ${loginInfo.url}: ${headerKeys.join(", ")}`
+                                                );
+                                                if (loginInfo.headersSource) {
+                                                        logDebug(
+                                                                `[Login] Header source for ${loginInfo.url}: ${loginInfo.headersSource}.`
+                                                        );
+                                                }
+                                        }
                                         const payloadKeys = Object.keys(loginInfo.payload || {});
                                         if (payloadKeys.length > 0) {
                                                 logDebug(
@@ -4339,9 +4501,12 @@ async function extractAndExport(options) {
                                                 const loginHeaders = buildHeadersForRequest(
                                                         baseRequestHeaders,
                                                         session.cookieJar,
-                                                        {
-                                                                Accept: "application/json,text/plain,*/*;q=0.8",
-                                                        }
+                                                        mergeHeaders(
+                                                                {
+                                                                        Accept: "application/json,text/plain,*/*;q=0.8",
+                                                                },
+                                                                loginInfo.headers || {}
+                                                        )
                                                 );
 
                                                 if (!hasHeader(loginHeaders, "Content-Type")) {
@@ -4349,7 +4514,7 @@ async function extractAndExport(options) {
                                                 }
 
                                                 return fetchWithOptionalProxy(loginInfo.url, {
-                                                        method: loginInfo.method || "POST",
+                                                        method: loginMethod,
                                                         headers: loginHeaders,
                                                         body: loginBody,
                                                         proxyUrl: proxyUrlValue,
