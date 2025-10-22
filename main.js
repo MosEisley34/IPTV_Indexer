@@ -580,6 +580,8 @@ if (require.main === module) {
 module.exports = {
         extractLinksDataScripts,
         extractLinksDataFromScript,
+        discoverAdditionalUrls,
+        collectStreamUrlsFromString,
 };
 
 function parseYamlScalar(rawValue) {
@@ -2937,15 +2939,45 @@ function hasLinkDataMarker(scriptContent) {
         );
 }
 
-function sanitizeRawString(value) {
+function decodeEscapedLinkValue(value) {
         if (typeof value !== "string") {
                 return "";
         }
 
-        return value
+        let result = value.trim();
+
+        if (result.length === 0) {
+                return "";
+        }
+
+        result = result
+                .replace(/&quot;/gi, '"')
+                .replace(/\\x([0-9a-fA-F]{2})/g, (match, hex) => {
+                        const code = Number.parseInt(hex, 16);
+                        return Number.isNaN(code) ? match : String.fromCharCode(code);
+                })
+                .replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+                        const code = Number.parseInt(hex, 16);
+                        return Number.isNaN(code) ? match : String.fromCharCode(code);
+                })
+                .replace(/\\\//g, "/")
+                .replace(/https?:\/\/{2,}/gi, (match) => match.replace(/\/+/g, "//"));
+
+        result = result.trim().replace(/^["']+/, "").replace(/["']+$/, "");
+
+        return result.trim();
+}
+
+function sanitizeRawString(value) {
+        const decoded = decodeEscapedLinkValue(value);
+
+        if (decoded.length === 0) {
+                return "";
+        }
+
+        return decoded
                 .replace(/\\u0026/gi, "&")
                 .replace(/&amp;/gi, "&")
-                .replace(/\\\//g, "/")
                 .replace(/\s+/g, " ")
                 .trim();
 }
@@ -3437,7 +3469,13 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
-                const trimmed = rawCandidate.trim();
+                const decodedCandidate = decodeEscapedLinkValue(rawCandidate);
+
+                if (!decodedCandidate) {
+                        continue;
+                }
+
+                const trimmed = decodedCandidate.trim();
 
                 if (!trimmed || trimmed.startsWith("#") || /^javascript:/i.test(trimmed)) {
                         continue;
@@ -3488,10 +3526,16 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
+                const decodedCandidate = decodeEscapedLinkValue(rawCandidate);
+
+                if (!decodedCandidate) {
+                        continue;
+                }
+
                 let resolved;
 
                 try {
-                        resolved = new URL(rawCandidate, base).href;
+                        resolved = new URL(decodedCandidate, base).href;
                 } catch (error) {
                         continue;
                 }
