@@ -9,10 +9,15 @@ scraper:
   credentials:
     - site: securestreaming.example.com
       loginUrl: https://securestreaming.example.com/api/login
+      method: POST
+      headers:
+        Content-Type: application/json
+        X-Requested-With: XMLHttpRequest
       username: demoUser
       password: demoPass123
     - site: iptv-demo.example.net
       loginUrl: https://iptv-demo.example.net/api/auth
+      method: POST
       username: sampleUser
       password: samplePass456
 
