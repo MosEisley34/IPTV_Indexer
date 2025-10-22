@@ -13,6 +13,8 @@ const DEFAULT_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
+const reportedMissingLoginConfigHosts = new Set();
+
 const DEFAULT_CONFIG_FILENAME = "config.yaml";
 const DEFAULT_IP_CHECK_URL = "https://api.ipify.org?format=json";
 
@@ -643,6 +645,72 @@ function pickFirstNonEmpty(values = []) {
         return null;
 }
 
+function hasLoginPayloadCandidate(options, credential) {
+        if (options && typeof options.loginPayload === "object" && options.loginPayload !== null) {
+                return true;
+        }
+
+        if (credential && typeof credential.payload === "object" && credential.payload !== null) {
+                return true;
+        }
+
+        const usernameCandidate = pickFirstNonEmpty([
+                options ? options.loginUsername : null,
+                credential ? credential.username : null,
+        ]);
+
+        if (usernameCandidate !== null) {
+                return true;
+        }
+
+        if (
+                (options && typeof options.loginPassword === "string" && options.loginPassword.length > 0) ||
+                (credential && typeof credential.password === "string" && credential.password.length > 0)
+        ) {
+                return true;
+        }
+
+        return false;
+}
+
+function reportMissingLoginConfiguration({ urlObject, missingFields = [] }) {
+        if (!urlObject) {
+                return;
+        }
+
+        const host =
+                (urlObject.hostname || urlObject.host || urlObject.href || "target site").toLowerCase();
+
+        if (!host || reportedMissingLoginConfigHosts.has(host)) {
+                return;
+        }
+
+        reportedMissingLoginConfigHosts.add(host);
+
+        const friendlyHost = urlObject.hostname || urlObject.host || urlObject.href || "target site";
+
+        const needsLoginUrl = missingFields.includes("loginUrl");
+        const needsCredentials = missingFields.includes("credentials");
+
+        const suggestions = [];
+
+        if (needsLoginUrl) {
+                suggestions.push(
+                        "Set 'loginUrl' for this site in config.yaml or pass it with --login-url=<URL>."
+                );
+        }
+
+        if (needsCredentials) {
+                suggestions.push(
+                        "Provide credentials using --login-username/--login-password, --login-payload, or the scraper.credentials section."
+                );
+        }
+
+        const suffix = suggestions.length > 0 ? ` ${suggestions.join(" ")}` : "";
+
+        console.warn(`[Login] Missing configuration for ${friendlyHost}.${suffix}`);
+}
+
 function buildLoginInfo({ urlObject, options, credential }) {
         if (!urlObject || !options) {
                 return null;
@@ -656,7 +724,18 @@ function buildLoginInfo({ urlObject, options, credential }) {
                 : '';
         const loginUrlCandidate = directLoginUrl || credentialLoginUrl;
 
+        const missingFields = [];
+
         if (!loginUrlCandidate) {
+                missingFields.push("loginUrl");
+        }
+
+        if (!hasLoginPayloadCandidate(options, credential)) {
+                missingFields.push("credentials");
+        }
+
+        if (!loginUrlCandidate) {
+                reportMissingLoginConfiguration({ urlObject, missingFields });
                 return null;
         }
 
@@ -696,6 +775,10 @@ function buildLoginInfo({ urlObject, options, credential }) {
                         };
                         payloadSource = "credentials";
                 }
+        }
+
+        if (!payload) {
+                reportMissingLoginConfiguration({ urlObject, missingFields: ["credentials"] });
         }
 
         return {
@@ -4229,8 +4312,10 @@ async function extractAndExport(options) {
                                 }
 
                                 if (!loginInfo.payload || typeof loginInfo.payload !== "object") {
+                                        const hostForLog = session.hostKey || loginInfo.url || targetUrl;
                                         console.warn(
-                                                `[Login] Skipping authentication for ${loginInfo.url} because no login payload was provided.`
+                                                `[Login] Skipping authentication for ${hostForLog} because no login payload was provided. ` +
+                                                        "Supply credentials with --login-username/--login-password, --login-payload, or update config.yaml."
                                         );
                                         emitAuthenticationStatus(
                                                 session,
