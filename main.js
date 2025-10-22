@@ -1131,6 +1131,17 @@ function ensureDirectoryExists(filePath) {
         }
 }
 
+function buildDiscoveryOutputPath(baseOutputFile) {
+        const parsed = path.parse(baseOutputFile || "discovery.json");
+        const discoveryFileName = `${parsed.name || "discovery"}-discovered-urls.json`;
+
+        if (parsed.dir && parsed.dir !== ".") {
+                return path.join(parsed.dir, discoveryFileName);
+        }
+
+        return discoveryFileName;
+}
+
 function writeConfigFile(configPath, data) {
         const resolvedPath = resolveConfigPath(configPath);
         ensureDirectoryExists(resolvedPath);
@@ -2324,7 +2335,8 @@ function logHelp() {
                 `  NORDVPN_CLI_TIMEOUT_MS  Max wait time for the CLI connection.\n` +
                 `  TEST_NORDVPN=true       Run the NordVPN connectivity diagnostics on startup.\n\n` +
                 `The configuration file can define multiple URLs (scraper.urls) and NordVPN credentials, ` +
-                `including parameters such as nordvpn.cliServer.`);
+                `including parameters such as nordvpn.cliServer.\n\n` +
+                `Whenever sub-URLs are discovered on a page, they are exported to a '<output>-discovered-urls.json' report.`);
 }
 
 function maskProxyUrl(proxyUrl) {
@@ -3814,6 +3826,73 @@ async function extractAndExport(options) {
 
         const urlSet = new Set();
         const urlsToProcess = [];
+        const discoveredSubUrlMap = new Map();
+        const discoveredSubUrlOrder = [];
+
+        const recordDiscoveredSubUrl = (candidateUrl, sourceUrl) => {
+                if (typeof candidateUrl !== "string" || candidateUrl.trim().length === 0) {
+                        return;
+                }
+
+                let entry = discoveredSubUrlMap.get(candidateUrl);
+
+                if (!entry) {
+                        entry = {
+                                url: candidateUrl,
+                                sources: new Set(),
+                        };
+                        discoveredSubUrlMap.set(candidateUrl, entry);
+                        discoveredSubUrlOrder.push(entry);
+                }
+
+                if (typeof sourceUrl === "string" && sourceUrl.trim().length > 0) {
+                        entry.sources.add(sourceUrl);
+                }
+        };
+
+        const emitDiscoveryReport = () => {
+                if (discoveredSubUrlOrder.length === 0) {
+                        return null;
+                }
+
+                console.log("\nDiscovered sub-URLs:");
+
+                const printableEntries = discoveredSubUrlOrder.map((entry, index) => {
+                        const sources = Array.from(entry.sources);
+                        const displayIndex = index + 1;
+
+                        console.log(`- [${displayIndex}] ${entry.url}`);
+
+                        if (sources.length > 0) {
+                                console.log(`    Found on: ${sources.join(", ")}`);
+                        }
+
+                        return {
+                                url: entry.url,
+                                sources,
+                        };
+                });
+
+                const discoveryOutputFile = buildDiscoveryOutputPath(normalizedOutputFile);
+                const discoveryOutputPath = path.resolve(discoveryOutputFile);
+                ensureDirectoryExists(discoveryOutputPath);
+
+                const reportPayload = {
+                        generatedAt: new Date().toISOString(),
+                        total: printableEntries.length,
+                        entries: printableEntries,
+                };
+
+                fs.writeFileSync(
+                        discoveryOutputPath,
+                        `${JSON.stringify(reportPayload, null, 2)}\n`,
+                        "utf8"
+                );
+
+                console.log(`\nDiscovery report saved to '${discoveryOutputFile}'.`);
+
+                return discoveryOutputFile;
+        };
 
         const pushUrl = (candidate) => {
                 if (typeof candidate !== "string") {
@@ -4399,6 +4478,8 @@ async function extractAndExport(options) {
                                                         );
 
                                                         for (const discoveredUrl of additionalUrls) {
+                                                                recordDiscoveredSubUrl(discoveredUrl, targetUrl);
+
                                                                 if (urlSet.has(discoveredUrl)) {
                                                                         continue;
                                                                 }
@@ -4489,6 +4570,7 @@ async function extractAndExport(options) {
         }
 
         if (aggregatedLinks.length === 0) {
+                emitDiscoveryReport();
                 console.log(
                         "Could not generate the output file because no valid links were found."
                 );
@@ -4557,4 +4639,6 @@ async function extractAndExport(options) {
                 console.log("    - Info line with group-title, tvg-id, and name");
                 console.log("    - Stream URL");
         }
+
+        emitDiscoveryReport();
 }
