@@ -35,3 +35,36 @@ test("discoverAdditionalUrls trims encoded trailing attribute noise", () => {
                 "https://www.tennischannel.com/en-us/page/mps?method=mvpd",
         ]);
 });
+
+test("discoverAdditionalUrls allows cross-host iframe embeds", () => {
+        const html =
+                '<iframe src="https://player.example.net/embed/channel123"></iframe>' +
+                '<div data-stream-src="https://player.example.net/player.php?stream=demo"></div>';
+        const urls = discoverAdditionalUrls(html, {
+                baseUrl: "https://origin.example.com/view/page",
+        });
+
+        assert.deepEqual(urls, [
+                "https://player.example.net/embed/channel123",
+                "https://player.example.net/player.php?stream=demo",
+        ]);
+});
+
+test("discoverAdditionalUrls includes cross-host direct stream links", () => {
+        const html =
+                '<a href="https://cdn.example.net/channel/master.m3u8">Watch now</a>';
+        const urls = discoverAdditionalUrls(html, {
+                baseUrl: "https://origin.example.com/page",
+        });
+
+        assert.deepEqual(urls, ["https://cdn.example.net/channel/master.m3u8"]);
+});
+
+test("discoverAdditionalUrls ignores cross-host static assets", () => {
+        const html = '<img src="https://cdn.example.net/logo.png" />';
+        const urls = discoverAdditionalUrls(html, {
+                baseUrl: "https://origin.example.com/page",
+        });
+
+        assert.deepEqual(urls, []);
+});

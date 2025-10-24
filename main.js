@@ -3996,6 +3996,17 @@ function deriveNameFromStreamUrl(url) {
         }
 }
 
+const CROSS_HOST_ATTRIBUTE_NAMES = new Set([
+        "src",
+        "data-src",
+        "data-embed-src",
+        "data-frame-src",
+        "data-player-src",
+        "data-stream-src",
+        "data-stream-url",
+        "data-player-url",
+]);
+
 function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = {}) {
         if (typeof html !== "string" || html.length === 0) {
                 return [];
@@ -4012,7 +4023,7 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
         const results = [];
         const seen = new Set();
         const attributeRegex =
-                /\b(?:href|data-url|data-href|data-link|data-path|data-target-url|data-permalink)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^"'\s>]+))/gi;
+                /\b(href|src|data-url|data-href|data-link|data-path|data-target-url|data-permalink|data-src|data-embed-src|data-frame-src|data-player-src|data-stream-src|data-stream-url|data-player-url)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^"'\s>]+))/gi;
         let match;
 
         while ((match = attributeRegex.exec(html)) !== null) {
@@ -4020,7 +4031,8 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         break;
                 }
 
-                const rawCandidate = match[1] || match[2] || match[3] || "";
+                const attributeName = (match[1] || "").toLowerCase();
+                const rawCandidate = match[2] || match[3] || match[4] || "";
 
                 if (!rawCandidate) {
                         continue;
@@ -4056,7 +4068,14 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
-                if (new URL(resolved).hostname !== base.hostname) {
+                const resolvedUrl = new URL(resolved);
+                const candidateHost = resolvedUrl.hostname;
+                const isSameHost = candidateHost === base.hostname;
+                const isDirectStream = isSupportedStreamUrl(resolved);
+                const allowsCrossHost =
+                        isDirectStream || CROSS_HOST_ATTRIBUTE_NAMES.has(attributeName);
+
+                if (!isSameHost && !allowsCrossHost) {
                         continue;
                 }
 
@@ -4117,7 +4136,12 @@ function discoverAdditionalUrls(html, { baseUrl, maxUrls = 10, existingUrls } = 
                         continue;
                 }
 
-                if (new URL(resolved).hostname !== base.hostname) {
+                const resolvedUrl = new URL(resolved);
+                const candidateHost = resolvedUrl.hostname;
+                const isSameHost = candidateHost === base.hostname;
+                const isDirectStream = isSupportedStreamUrl(resolved);
+
+                if (!isSameHost && !isDirectStream) {
                         continue;
                 }
 
